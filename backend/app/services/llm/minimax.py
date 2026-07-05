@@ -148,7 +148,9 @@ class MiniMaxService:
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
 
-        async with websockets.connect(url, additional_headers=headers, ssl=ssl_context) as ws:
+        # 当前 websockets 库版本用 extra_headers（不是 additional_headers）
+        ws_cm = websockets.connect(url, extra_headers=headers, ssl=ssl_context)
+        async with ws_cm as ws:
             # Wait for connection confirmation
             conn_resp = json.loads(await ws.recv())
             if conn_resp.get("event") != "connected_success":
@@ -404,7 +406,7 @@ class MiniMaxService:
         try:
             async with websockets.connect(
                 url,
-                additional_headers={"Authorization": f"Bearer {self.api_key}"},
+                extra_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
                 max_size=10 * 1024 * 1024,
             ) as ws:
@@ -533,7 +535,7 @@ class MiniMaxService:
         try:
             async with websockets.connect(
                 url,
-                additional_headers={"Authorization": f"Bearer {self.api_key}"},
+                extra_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
                 max_size=10 * 1024 * 1024,
             ) as ws:
