@@ -415,8 +415,10 @@ async def process_user_message(websocket, session_id: str, content: str,
             transcribed = ""
             # Path 1: MiniMax Realtime API (best accuracy)
             try:
-                transcribed = await minimax.speech_to_text_realtime(
-                    audio_bytes, audio_mime=mime
+                # 加 timeout：Realtime API 偶尔 hang，必须 fallback
+                transcribed = await asyncio.wait_for(
+                    minimax.speech_to_text_realtime(audio_bytes, audio_mime=mime),
+                    timeout=5.0,
                 )
                 print(f"[ASR] realtime result: {transcribed!r}")
             except Exception as rt_err:
@@ -854,165 +856,64 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # Receive loop (single, well-defined)
     # 支持 text (JSON) + binary (audio chunks) 帧
     # ------------------------------------------------------------------
-    # P5: 真正的边说边生成 — 边收 audio chunk 边推 Realtime ASR，partial 立即触发 LLM。
+    # P5 simplified: partial trigger LLM — voice_start 后每 1.5s 用已收 audio 触发
+    # ASR+LLM pipeline（用整段 audio 让 Realtime ASR 一次性识别 — 简化避开 wav 切片）。
+    # 用户说完时如已触发 LLM，则 cancel 当前 pipeline + 用 final audio 重新触发。
     stream_buffer: List[bytes] = []
     stream_mime: str = "audio/webm"
     stream_client_id: Optional[str] = None
     stream_lock = asyncio.Lock()
-    # P5 状态
-    partial_text: str = ""  # 最新 partial transcript
-    partial_stable_since: Optional[float] = None  # partial 开始稳定的时间
-    last_partial_change: float = 0  # partial 最后变化时间
-    realtime_asr_task: Optional[asyncio.Task] = None
-    realtime_asr_done: bool = False
-    partial_llm_triggered: bool = False
-    final_transcript: str = ""
-    voice_active: bool = False
-    pcm_queue: asyncio.Queue = asyncio.Queue()  # PCM chunks 队列
-    _transcode_buffer: List[bytes] = []
-    _transcode_lock = asyncio.Lock()
-    _TRANSCODE_THRESHOLD = 16000  # 累积 16KB (约 500ms @ 16kHz) 才转码
+    partial_trigger_task: Optional[asyncio.Task] = None
+    partial_trigger_done: bool = False
+    current_pipeline_task: Optional[asyncio.Task] = None
 
-    async def _flush_transcode_buffer():
-        """累积 _TRANSCODE_THRESHOLD 后批量转码 wav → PCM 推 pcm_queue"""
-        nonlocal _transcode_buffer
-        async with _transcode_lock:
-            if not _transcode_buffer:
-                return
-            audio_to_convert = b"".join(_transcode_buffer)
-            _transcode_buffer = []
-        import subprocess, tempfile
+    async def _partial_trigger_llm():
+        """P5 simplified: voice_start 后 1.5s 用已收 audio 触发 ASR+LLM。
+        LLM 的 2.3-5s TTFT 被用户继续说话的时间覆盖。
+        关键：如果 pipeline 因为 ASR 卡住（如 Realtime API hang），等 8s 超时后取消。"""
+        nonlocal partial_trigger_done, current_pipeline_task
         try:
-            ext_map = {
-                "audio/webm": ".webm",
-                "audio/webm;codecs=opus": ".webm",
-                "audio/ogg": ".ogg",
-                "audio/wav": ".wav",
-            }
-            ext = ext_map.get(stream_mime.split(";")[0].strip().lower(), ".webm")
-            src = tempfile.mktemp(suffix=ext)
-            dst = src + ".pcm"
-            with open(src, "wb") as f:
-                f.write(audio_to_convert)
-            # 关键：用 asyncio.to_thread 而不是 asyncio.subprocess.run
-            # 后者在 Windows 上会让 ffmpeg crash（错误 3199971767）
-            def _do_transcode():
-                return subprocess.run([
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-i", src,
-                    "-ar", "24000", "-ac", "1", "-f", "s16le",
-                    dst,
-                ], capture_output=True, timeout=10)
-            result = await asyncio.to_thread(_do_transcode)
-            if result.returncode != 0:
-                print(f"[P5] ffmpeg failed rc={result.returncode}: {result.stderr.decode()[:300]}")
-                return
-            with open(dst, "rb") as f:
-                pcm = f.read()
-            os.unlink(src); os.unlink(dst)
-            if pcm:
-                for i in range(0, len(pcm), 4800):
-                    await pcm_queue.put(pcm[i:i+4800])
-        except Exception as e:
-            print(f"[P5] batch transcode error: {e}")
-
-    async def _transcode_and_feed(audio_chunk: bytes):
-        """P5: 累积到 16KB 才批量转码（避免每个 chunk 都启 ffmpeg 进程）"""
-        nonlocal _transcode_buffer
-        async with _transcode_lock:
-            _transcode_buffer.append(audio_chunk)
-            total = sum(len(c) for c in _transcode_buffer)
-            if total < _TRANSCODE_THRESHOLD:
-                return
-        # 超过阈值 → 转码
-        await _flush_transcode_buffer()
-
-    async def _realtime_asr_consumer():
-        """P5: 启动 MiniMax Realtime ASR session，监听 partial → 推前端 + 触发 LLM。"""
-        nonlocal partial_text, last_partial_change, partial_llm_triggered, final_transcript, realtime_asr_done
-        try:
-            from app.services.llm.minimax import get_minimax_service
-            svc = get_minimax_service()
-
-            async def pcm_source():
-                """从 pcm_queue 持续取 PCM chunks"""
-                while True:
-                    chunk = await pcm_queue.get()
-                    if chunk is None:  # 终止信号
-                        break
-                    yield chunk
-
-            async def on_partial(text: str):
-                """每个 partial 推前端 + 检查是否 1.5s 稳定可触发 LLM"""
-                nonlocal partial_text, last_partial_change, partial_stable_since, partial_llm_triggered
-                if text == partial_text:
-                    return  # 没变
-                partial_text = text
-                last_partial_change = time.time()
-                # 推前端
-                await safe_send_message(session_id, {
-                    "type": "asr_partial",
-                    "text": text,
-                    "timestamp": time.time(),
-                })
-                # 检查 1.5s 稳定（partial 长度 >= 4 个字符才触发）
-                if not partial_llm_triggered and len(text) >= 4:
-                    # 启动稳定检测 task
-                    if partial_stable_since is None:
-                        partial_stable_since = time.time()
-                    # 距离上次变化 >= 1.5s → 触发 LLM
-                    if time.time() - last_partial_change >= 1.5 and time.time() - partial_stable_since >= 1.5:
-                        partial_llm_triggered = True
-                        print(f"[P5] partial stable 1.5s: {text!r} → trigger LLM")
-                        asyncio.create_task(process_user_message(
-                            websocket, session_id,
-                            text,  # partial 当 user_text
-                            "",  # no audio
-                            None,  # no audio_mime
-                            stream_client_id,
-                        ))
-
-            final = await svc.speech_to_text_realtime_stream(
-                pcm_source(),
-                on_partial,
-            )
-            final_transcript = final
-            print(f"[P5] realtime ASR final: {final!r}")
-            await safe_send_message(session_id, {
-                "type": "asr_final",
-                "text": final,
-                "timestamp": time.time(),
-            })
-        except Exception as e:
-            print(f"[P5] realtime ASR error: {e}")
-            import traceback; traceback.print_exc()
-        finally:
-            realtime_asr_done = True
-
-    async def _finalize_stream_asr_and_process():
-        """voice_end 触发：等 realtime ASR 出 final，如果与 partial 不同且已触发 LLM 错，重触发。"""
-        nonlocal partial_llm_triggered
-        # 1. 关掉 pcm_queue
-        await pcm_queue.put(None)
-        # 2. 等 realtime ASR 完成（最多 5s）
-        for _ in range(50):
-            if realtime_asr_done:
-                break
-            await asyncio.sleep(0.1)
-        # 3. 如果 final 与之前触发 LLM 用的 partial 不同 → 用 final 重新触发
-        #    （目前简化：partial 已触发就用 partial 跑完，不重触发；final 单独显示给前端）
-        # 用户停 → 流程：partial LLM 已经在跑 → 5-6s 后用户听到 AI 完整回复
-        print(f"[P5] voice_end: partial={partial_text!r}, final={final_transcript!r}, llm_triggered={partial_llm_triggered}")
-        if not partial_llm_triggered and final_transcript.strip():
-            # 说话太短 partial 没触发 LLM，用 final 触发
-            print(f"[P5] short utterance, triggering LLM with final")
-            asyncio.create_task(process_user_message(
+            await asyncio.sleep(1.5)
+            async with stream_lock:
+                if partial_trigger_done or not stream_buffer:
+                    return
+                if current_pipeline_task and not current_pipeline_task.done():
+                    current_pipeline_task.cancel()
+                audio_blob = b"".join(stream_buffer)
+            print(f"[P5] partial trigger at 1.5s, audio={len(audio_blob)} bytes")
+            partial_trigger_done = True
+            current_pipeline_task = asyncio.create_task(process_user_message(
                 websocket, session_id,
-                final_transcript,
                 "",
-                None,
+                base64.b64encode(audio_blob).decode(),
+                stream_mime,
                 stream_client_id,
             ))
+            try:
+                # 给 8s 超时（ASR 1-2s + LLM 2-5s + TTS 1-2s）
+                await asyncio.wait_for(current_pipeline_task, timeout=8)
+            except asyncio.TimeoutError:
+                print(f"[P5] partial trigger timeout (8s), cancel pipeline")
+                current_pipeline_task.cancel()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[P5] partial trigger error: {e}")
+
+    async def _finalize_voice_end():
+        """voice_end: 等当前 pipeline 跑完。如果没触发过 LLM 用 final audio 触发。"""
+        nonlocal partial_trigger_done, current_pipeline_task
+        # 取消 partial_trigger task（如果还在跑）
+        if partial_trigger_task and not partial_trigger_task.done():
+            partial_trigger_task.cancel()
+        # 等当前 pipeline 完成（最多 30s）
+        if current_pipeline_task and not current_pipeline_task.done():
+            try:
+                await asyncio.wait_for(current_pipeline_task, timeout=30)
+            except asyncio.TimeoutError:
+                current_pipeline_task.cancel()
+            except Exception:
+                pass
 
     try:
         while True:
@@ -1034,11 +935,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 audio_bytes = bytes(raw["bytes"])
                 async with stream_lock:
                     stream_buffer.append(audio_bytes)
-                # P5: 边收边推 pcm_queue（realtime ASR consumer 会消费）
-                if voice_active:
-                    # 异步转码 webm/opus → 24kHz mono PCM s16le
-                    # 简化：先累积到 N 个分片再转一次（ffmpeg 启动开销）
-                    asyncio.create_task(_transcode_and_feed(audio_bytes))
+                # P5 simplified: 累积 stream_buffer，partial trigger 在 1.5s 后用整段 audio 触发 LLM
                 continue
 
             # 处理 text 帧（JSON 命令）
@@ -1067,30 +964,19 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                     stream_buffer.clear()
                     stream_mime = data.get("audio_mime", "audio/webm")
                     stream_client_id = data.get("id")
-                    partial_text = ""
-                    partial_stable_since = None
-                    last_partial_change = 0
-                    partial_llm_triggered = False
-                    final_transcript = ""
-                    realtime_asr_done = False
+                    partial_trigger_done = False
                 voice_start_time = time.time()
                 voice_active = True
-                # 清空 pcm_queue
-                while not pcm_queue.empty():
-                    try: pcm_queue.get_nowait()
-                    except: break
                 await safe_send_status(session_id, ConversationState.USER_SPEAKING)
-                # P5: 启动 realtime ASR consumer
-                if realtime_asr_task and not realtime_asr_task.done():
-                    realtime_asr_task.cancel()
-                realtime_asr_task = asyncio.create_task(_realtime_asr_consumer())
+                # P5 simplified: 启动 partial trigger — 用户说 1.5s 后立即触发 LLM
+                if partial_trigger_task and not partial_trigger_task.done():
+                    partial_trigger_task.cancel()
+                partial_trigger_task = asyncio.create_task(_partial_trigger_llm())
             elif msg_type == "voice_end":
                 voice_active = False
                 await safe_send_status(session_id, ConversationState.IDLE)
-                # P5: 把残留的 transcode buffer 强制转码（避免漏转最后一段）
-                await _flush_transcode_buffer()
-                # 等待 realtime ASR 出 final transcript
-                asyncio.create_task(_finalize_stream_asr_and_process())
+                # P5: 触发 voice_end 收尾（等当前 pipeline 跑完）
+                asyncio.create_task(_finalize_voice_end())
                 if session_manager.should_insert_backchannel(session_id):
                     backchannel_text = backchannel_manager.generate_backchannel_text()
                     await safe_send_message(session_id, {
