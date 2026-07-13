@@ -951,6 +951,9 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     stream_lock = asyncio.Lock()
     realtime_task: Optional[asyncio.Task] = None
     voice_active: bool = False
+    # 优化：累积到 16KB audio 才 ffmpeg 转码一次（避免启动开销）
+    # 16KB webm/opus ≈ 1-2s 音频（取决于编码），转码后 ≈ 48KB 24kHz PCM
+    _FFMPEG_BATCH_BYTES = 4000  # 4KB ≈ 0.25-0.5s 音频（短句也能转码）
 
     async def _ffmpeg_to_pcm(audio_bytes: bytes, mime: str) -> Optional[bytes]:
         """webm/wav → 24kHz mono s16le PCM"""
@@ -1028,14 +1031,20 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             if raw.get("type") != "websocket.receive":
                 continue
 
-            # Binary 帧 = audio chunk → 累积 + 转码 + 推 Realtime
+            # Binary 帧 = audio chunk → 累积 + 批量转码 + 推 Realtime
+            # 优化：累积到 _FFMPEG_BATCH_BYTES 才转码一次（避免 53 个 ffmpeg 启动开销）
             if "bytes" in raw and raw["bytes"]:
                 audio_bytes = bytes(raw["bytes"])
                 async with stream_lock:
                     stream_buffer.append(audio_bytes)
-                if voice_active:
+                    cur_size = sum(len(c) for c in stream_buffer)
+                if voice_active and cur_size >= _FFMPEG_BATCH_BYTES:
+                    # 批量转码：取累积的所有 audio
+                    async with stream_lock:
+                        batch = b"".join(stream_buffer)
+                        stream_buffer.clear()
                     mime = stream_mime
-                    pcm = await _ffmpeg_to_pcm(audio_bytes, mime)
+                    pcm = await _ffmpeg_to_pcm(batch, mime)
                     if pcm:
                         await pcm_queue.put(pcm)
                 continue
