@@ -1103,6 +1103,146 @@ class MiniMaxService:
         # Step 3: TTS - Convert response to speech
         audio_output = await self.text_to_speech(response_text, voice=voice_id)
 
+    async def realtime_voice_chat(
+        self,
+        pcm_chunks_source,  # async iterator yielding 24kHz mono PCM bytes (16-bit LE)
+        on_text_delta,       # async callable(str) for each text partial
+        on_audio_delta,      # async callable(bytes) for each audio chunk
+        voice: str = "male-qn-qingse",
+        system_instruction: str = "你扮演客户，简短回复1-2句话。",
+    ) -> str:
+        """P5 真正豆包级: 边推 audio input 边收 audio output 流式 (response.audio.delta)。
+
+        这是 MiniMax Realtime API 的多模态模式 — 一个端点包含：
+        - audio input: 用户说话（推流式 PCM16）
+        - audio output: AI 回复（response.audio.delta 流式 pcm16 音频）
+        - text partial: AI 文字（response.text.delta 增量）
+        - server_vad: 服务端自动检测用户停顿触发回复
+
+        实测：5s 中文输入 → 1.7s 延迟听到完整 AI 音频。
+
+        Args:
+            pcm_chunks_source: async iterator yielding 24kHz mono 16-bit LE PCM
+            on_text_delta: async callback 推每个 text delta
+            on_audio_delta: async callback 推每个 audio delta (pcm16 bytes)
+            voice: 输出声音 ID
+            system_instruction: LLM system prompt
+
+        Returns:
+            final text 字符串
+        """
+        import asyncio
+        import ssl
+        import websockets
+
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+        try:
+            ws_cm = websockets.connect(
+                'wss://api.minimaxi.com/ws/v1/realtime',
+                extra_headers={'Authorization': f'Bearer {self.api_key}'},
+                ssl=ssl_ctx,
+            )
+        except TypeError:
+            ws_cm = websockets.connect(
+                'wss://api.minimaxi.com/ws/v1/realtime',
+                additional_headers={'Authorization': f'Bearer {self.api_key}'},
+                ssl=ssl_ctx,
+            )
+
+        full_text = ""
+        async with ws_cm as ws:
+            try:
+                # 等 session.created
+                msg = await asyncio.wait_for(ws.recv(), 10.0)
+                ev = json.loads(msg)
+                if ev.get("type") != "session.created":
+                    print(f"[Realtime] unexpected first event: {ev.get('type')}")
+
+                # 配置 session - 多模态（text + audio output），server_vad 自动检测停顿
+                await ws.send(json.dumps({
+                    "type": "session.update",
+                    "session": {
+                        "modalities": ["text", "audio"],
+                        "voice": voice,
+                        "input_audio_format": "pcm16",
+                        "output_audio_format": "pcm16",
+                        "system_instruction": system_instruction,
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "silence_duration_ms": 500,
+                        },
+                    },
+                }))
+                msg = await asyncio.wait_for(ws.recv(), 10.0)  # session.updated
+
+                # 后台：持续推 audio
+                async def _audio_feeder():
+                    try:
+                        async for pcm in pcm_chunks_source:
+                            if pcm is None:
+                                break
+                            await ws.send(json.dumps({
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(pcm).decode(),
+                            }))
+                    except Exception as e:
+                        print(f"[Realtime] feeder error: {e}")
+
+                feeder_task = asyncio.create_task(_audio_feeder())
+
+                # 收 events 流
+                try:
+                    while True:
+                        msg = await asyncio.wait_for(ws.recv(), 60.0)
+                        data = json.loads(msg)
+                        etype = data.get("type", "")
+                        if etype == "response.text.delta":
+                            delta = data.get("delta", "")
+                            full_text += delta
+                            try:
+                                await on_text_delta(delta)
+                            except Exception:
+                                pass
+                        elif etype == "response.text.done":
+                            done_text = data.get("text", "")
+                            if done_text and done_text != full_text:
+                                full_text = done_text
+                        elif etype == "response.audio.delta":
+                            audio_b64 = data.get("delta", "")
+                            if audio_b64:
+                                try:
+                                    await on_audio_delta(base64.b64decode(audio_b64))
+                                except Exception:
+                                    pass
+                        elif etype == "response.done":
+                            break
+                        elif etype == "error":
+                            print(f"[Realtime] error: {data.get('error')}")
+                            break
+                        # input_audio_buffer.* events (VAD) 忽略
+                except asyncio.TimeoutError:
+                    print("[Realtime] recv timeout, finalizing")
+                finally:
+                    feeder_task.cancel()
+                    try:
+                        await feeder_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+            except Exception as e:
+                print(f"[Realtime] error: {e}")
+                import traceback; traceback.print_exc()
+            finally:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+
+        return full_text
+
         return {
             "text": text,
             "response_text": response_text,
