@@ -1189,6 +1189,12 @@ class MiniMaxService:
                                 "type": "input_audio_buffer.append",
                                 "audio": base64.b64encode(pcm).decode(),
                             }))
+                        # 推完所有 audio 后显式 commit + create（让 LLM 立即处理）
+                        await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                        await ws.send(json.dumps({
+                            "type": "response.create",
+                            "response": {"modalities": ["text", "audio"]},
+                        }))
                     except Exception as e:
                         print(f"[Realtime] feeder error: {e}")
 
