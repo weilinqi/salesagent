@@ -43,8 +43,6 @@ export function useAudioStream(): UseAudioStreamReturn {
   const pendingBuffersRef = useRef<AudioBuffer[]>([])
   // 下一次播放的开始时间（用 AudioContext.currentTime + offset）
   const nextStartTimeRef = useRef<number>(0)
-  // 已播完的总秒数（用于 currentPosition）
-  const totalPlayedSecRef = useRef<number>(0)
   // 排队播放用的 Interval ID
   const drainIntervalRef = useRef<number | null>(null)
 
@@ -52,14 +50,13 @@ export function useAudioStream(): UseAudioStreamReturn {
     if (typeof window === 'undefined') return null
     const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext
     if (!Ctx) return null
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new Ctx()
-    }
+    const ctx = audioCtxRef.current ?? new Ctx()
+    audioCtxRef.current = ctx
     // 用户交互后 audioCtx 可能被挂起，需要 resume
-    if (audioCtxRef.current.state === 'suspended') {
-      audioCtxRef.current.resume().catch(() => {})
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {})
     }
-    return audioCtxRef.current
+    return ctx
   }, [])
 
   const drainQueue = useCallback(() => {
@@ -151,7 +148,7 @@ export function useAudioStream(): UseAudioStreamReturn {
       }
     }
 
-    audio.onerror = (e) => {
+    audio.onerror = () => {
       console.error('[AudioStream] MP3 Audio error:', audio.error)
       setIsPlaying(false)
       setIsBuffering(false)
@@ -306,7 +303,7 @@ export function useAudioStream(): UseAudioStreamReturn {
         isPlayingRef.current = false
       }
 
-      audio.onerror = (e) => {
+      audio.onerror = () => {
         console.error('[AudioStream] Replay error:', audio.error, 'mime:', mime)
         setIsPlaying(false)
         setIsBuffering(false)

@@ -9,7 +9,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api, {
-  BriefSubscription, BriefSubscriptionsUpdate, BriefSummary,
+  BriefSubscription, BriefSummary,
   INDUSTRY_OPTIONS,
 } from '../../api/briefs'
 
@@ -21,7 +21,6 @@ const BriefListPage = () => {
   const [briefs, setBriefs] = useState<BriefSummary[]>([])
   const [todayByIndustry, setTodayByIndustry] = useState<Record<string, BriefSummary[]>>({})
   const [todayDate, setTodayDate] = useState<string>('')
-  const [subscriptions, setSubscriptions] = useState<BriefSubscription[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -51,7 +50,6 @@ const BriefListPage = () => {
       setBriefs(hist)
       setTodayByIndustry(today.industries || {})
       setTodayDate(today.date || '')
-      setSubscriptions(subs.subscriptions || [])
       setSubsDraft(subs.subscriptions || [])
     } catch (e: any) {
       setError(e?.response?.data?.detail || e?.message || '加载简报失败')
@@ -111,7 +109,7 @@ const BriefListPage = () => {
     setSubsMsg(null)
     try {
       const result = await api.updateSubscriptions({ subscriptions: subsDraft })
-      setSubscriptions(result.subscriptions)
+      setSubsDraft(result.subscriptions)
       setSubsMsg('✅ 已保存。每日 8:30 后台会自动抓取最新新闻。')
     } catch (e: any) {
       setSubsMsg('❌ 保存失败：' + (e?.response?.data?.detail || e?.message))

@@ -204,7 +204,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         URL.revokeObjectURL(url)
       }
 
-      audioElementRef.current.onerror = (e) => {
+      audioElementRef.current.onerror = () => {
         console.error('[Replay] Audio error:', audioElementRef.current?.error)
         // Try as raw PCM if mp3 fails
         tryRawPCM(bytes)
