@@ -174,7 +174,11 @@ const HistoryPage = () => {
 
       {/* History List */}
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {historyError && <p role="alert" className="mb-4 text-red-600">{historyError}</p>}
+        {historyError && (
+          <div className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-700">
+            {historyError}
+          </div>
+        )}
         {isLoading ? (
           <div className="space-y-4">
             {[1, 2, 3, 4, 5].map(i => (

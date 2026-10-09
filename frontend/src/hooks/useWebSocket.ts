@@ -6,6 +6,15 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 
 export type ConversationState = 'idle' | 'user_speaking' | 'ai_speaking' | 'processing'
 
+export interface KnowledgeRef {
+  category?: string
+  source?: string
+  chapter?: string
+  section?: string
+  excerpt?: string
+  relevance?: number
+}
+
 export interface StreamMessage {
   type: 'user_message' | 'user_message_ack' | 'ai_message' | 'ai_message_audio' | 'ai_streaming_start' | 'ai_streaming_update' |
         'ai_streaming_end' | 'audio_chunk' | 'backchannel' | 'status_update' |
@@ -13,14 +22,7 @@ export interface StreamMessage {
   id?: string
   content?: string
   audio_data?: string
-  knowledge_refs?: Array<{
-    category?: string
-    source?: string
-    chapter?: string
-    section?: string
-    excerpt?: string
-    relevance?: number
-  }>
+  knowledge_refs?: KnowledgeRef[]
   state?: ConversationState
   timestamp: string
   data?: Record<string, unknown>
