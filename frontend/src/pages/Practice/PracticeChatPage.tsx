@@ -13,7 +13,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { usePracticeStore } from '../../stores/practiceStore'
-import { useWebSocket, StreamMessage } from '../../hooks/useWebSocket'
+import { useWebSocket, StreamMessage, KnowledgeRef } from '../../hooks/useWebSocket'
 import { useAudioStream } from '../../hooks/useAudioStream'
 import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
@@ -27,14 +27,7 @@ interface MessageItem {
   audioData?: string  // base64 encoded audio for replay
   isSending?: boolean
   timestamp: string
-  knowledgeRefs?: Array<{
-    category?: string
-    source?: string
-    chapter?: string
-    section?: string
-    excerpt?: string
-    relevance?: number
-  }>
+  knowledgeRefs?: KnowledgeRef[]
 }
 
 interface PhaseSummaryData {
