@@ -1,4 +1,3 @@
-/**
  * useAudioStream - Streaming audio playback hook
  * Handles chunked audio playback with interruption support.
  * P4: 用 Web Audio API 实时解码 + 排队播放（替代累积 blob 后再播），
