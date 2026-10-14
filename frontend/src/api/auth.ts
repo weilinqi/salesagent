@@ -73,8 +73,8 @@ const api = {
     return res.data
   },
 
-  async logout(): Promise<void> {
-    await axios.post(`${API_BASE}/auth/logout`)
+  async logout(token?: string | null): Promise<void> {
+    await axios.post(`${API_BASE}/auth/logout`, undefined, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined)
   },
 }
 

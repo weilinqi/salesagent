@@ -42,8 +42,10 @@ class DocumentCreate(DocumentBase):
 class DocumentResponse(DocumentBase):
     """Schema for document response."""
     id: str
+    category: str
     chunk_count: int = 0
-    status: str = "pending"  # pending, processing, completed, failed
+    status: str = "queued"  # queued, processing, completed, failed
+    error: Optional[str] = None
     created_at: datetime
     processed_at: Optional[datetime] = None
 
@@ -77,14 +79,16 @@ class KnowledgeSearchResponse(BaseModel):
 
 class KnowledgeIngestRequest(BaseModel):
     """Schema for ingesting a new document."""
-    file_path: str = Field(..., description="Path to the file to ingest")
-    category: str = Field(..., description="Category: spin, strategic_marketing, solution_selling")
+    file_path: str = Field(..., min_length=1, max_length=2048,
+                           description="PDF path within KNOWLEDGE_DATA_DIR (relative paths recommended)")
+    category: str = Field(..., min_length=1, max_length=128,
+                          description="Category: spin, strategic_marketing, solution_selling")
 
 
 class KnowledgeIngestResponse(BaseModel):
     """Schema for ingest response."""
     document_id: str
-    status: str  # processing, completed, failed
+    status: str  # queued, processing, completed, failed
     chunk_count: int = 0
     message: str
 

@@ -3,12 +3,15 @@ Authentication API endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime
 
 from app.database import get_db
+from app.config import settings
 from app.models.user import User
 from app.schemas.auth import (
     LoginRequest,
+    RefreshTokenRequest,
     RegisterRequest,
     TokenResponse,
     UserResponse,
@@ -72,7 +75,7 @@ async def register(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=60 * 60 * 24,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=user
     )
 
@@ -122,18 +125,18 @@ async def login(
         access_token=access_token,
         refresh_token=refresh_token,
         token_type="bearer",
-        expires_in=60 * 60 * 24,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=user
     )
 
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
-    refresh_token: str,
+    request: RefreshTokenRequest,
     db: Session = Depends(get_db)
 ):
     """Refresh access token using refresh token"""
-    payload = decode_token(refresh_token)
+    payload = decode_token(request.refresh_token)
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -157,7 +160,7 @@ async def refresh_token(
         access_token=access_token,
         refresh_token=new_refresh_token,
         token_type="bearer",
-        expires_in=60 * 60 * 24,
+        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         user=user
     )
 
@@ -179,10 +182,19 @@ async def update_me(
 ):
     """Update current user profile"""
     update_dict = update_data.model_dump(exclude_unset=True)
+    for field, message in (("email", "该邮箱已被注册"), ("username", "该用户名已被使用")):
+        if field in update_dict and db.query(User).filter(
+            getattr(User, field) == update_dict[field], User.id != current_user.id,
+        ).first():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
     for key, value in update_dict.items():
         setattr(current_user, key, value)
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="邮箱或用户名已被使用")
     db.refresh(current_user)
     return current_user
 

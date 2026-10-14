@@ -1,9 +1,7 @@
-"""
-SalesAgent Frontend Dockerfile
-- 多阶段构建：Node 22 build → Nginx serve
-- 输出静态资源到 /usr/share/nginx/html
-- 配合 docker-compose 用 nginx 反代 /api 到后端
-"""
+# SalesAgent Frontend Dockerfile
+# - 多阶段构建：Node 22 build → Nginx serve
+# - 输出静态资源到 /usr/share/nginx/html
+# - 配合 docker-compose 用 nginx 反代 /api 到后端
 # 阶段 1：构建
 FROM node:22-alpine AS builder
 WORKDIR /app

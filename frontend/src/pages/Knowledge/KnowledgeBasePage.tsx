@@ -9,9 +9,9 @@
  *
  * Story: Knowledge Base Integration
  */
-import { useState, useEffect } from 'react'
-import api from '../../api/knowledge'
-import type { KnowledgeStats, KnowledgeDocument, SearchResult, SpinQuestions } from '../../api/knowledge'
+import { useState, useEffect, useRef } from 'react'
+import api, { createKnowledgeMonitor, initialKnowledgeState } from '../../api/knowledge'
+import type { SearchResult, SpinQuestions } from '../../api/knowledge'
 
 const KnowledgeBasePage = () => {
   const [activeTab, setActiveTab] = useState('search')
@@ -20,13 +20,9 @@ const KnowledgeBasePage = () => {
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
 
-  // Documents state
-  const [documents, setDocuments] = useState<KnowledgeDocument[]>([])
-  const [stats, setStats] = useState<KnowledgeStats | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const [isIngesting, setIsIngesting] = useState(false)
-
+  const [knowledgeState, setKnowledgeState] = useState(initialKnowledgeState)
+  const { documents, stats, isLoading, loadError, isIngesting, ingestNotice, submissionErrors, pollingPaused } = knowledgeState
+  const monitorRef = useRef<ReturnType<typeof createKnowledgeMonitor> | null>(null)
   // SPIN form state
   const [spinIndustry, setSpinIndustry] = useState('')
   const [spinScale, setSpinScale] = useState('')
@@ -41,35 +37,18 @@ const KnowledgeBasePage = () => {
     { key: 'spin', label: 'SPIN问题生成' }
   ]
 
-  // Load initial data — 失败时显示错误状态，不填充假数据
-  const loadData = async () => {
-    setIsLoading(true)
-    setLoadError(null)
-    try {
-      const [docsData, statsData] = await Promise.all([
-        api.getDocuments(),
-        api.getStats()
-      ])
-      setDocuments(docsData || [])
-      setStats(statsData)
-    } catch (error: any) {
-      console.error('Failed to load knowledge base data:', error)
-      setLoadError(
-        error?.response?.data?.detail || error?.message || '加载知识库失败'
-      )
-      setDocuments([])
-      setStats(null)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
   useEffect(() => {
-    if (activeTab === 'documents') {
-      loadData()
+    if (activeTab !== 'documents') return
+    const monitor = createKnowledgeMonitor(setKnowledgeState)
+    monitorRef.current = monitor
+    void monitor.refresh()
+    return () => {
+      monitor.dispose()
+      if (monitorRef.current === monitor) monitorRef.current = null
     }
   }, [activeTab])
 
+  const loadData = () => { void monitorRef.current?.refresh() }
   const handleSearch = async () => {
     if (!searchQuery.trim()) return
 
@@ -89,21 +68,7 @@ const KnowledgeBasePage = () => {
     }
   }
 
-  const handleIngestAll = async () => {
-    setIsIngesting(true)
-    try {
-      const response = await api.ingestAll()
-      // Reload data after ingest
-      await loadData()
-      alert(`知识库更新完成！共处理 ${response.total} 个文档`)
-    } catch (error: any) {
-      console.error('Ingest failed:', error)
-      alert('更新失败：' + (error?.response?.data?.detail || error?.message || '未知错误'))
-    } finally {
-      setIsIngesting(false)
-    }
-  }
-
+  const handleIngestAll = () => monitorRef.current?.ingestAll()
   const handleGenerateSpin = async () => {
     if (!spinIndustry || !spinScale || !spinPainPoints) {
       alert('请填写完整的客户信息')
@@ -192,6 +157,9 @@ const KnowledgeBasePage = () => {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h3 className="text-lg font-semibold text-gray-900">知识库文档</h3>
+        <button onClick={loadData} disabled={isLoading} className="px-3 py-2 text-primary underline disabled:opacity-50">
+          {isLoading ? '刷新中...' : '刷新状态'}
+        </button>
         <button
           onClick={handleIngestAll}
           disabled={isIngesting}
@@ -200,7 +168,7 @@ const KnowledgeBasePage = () => {
           {isIngesting ? (
             <>
               <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-              更新中...
+              提交中...
             </>
           ) : (
             <>
@@ -213,12 +181,20 @@ const KnowledgeBasePage = () => {
         </button>
       </div>
 
-      {loadError ? (
+      {ingestNotice && <p role="status" className="bg-blue-50 p-3 text-sm text-blue-900 rounded-lg">{ingestNotice}</p>}
+      {submissionErrors.map((error, index) => (
+        <p key={index} role="alert" className="bg-red-50 p-3 text-sm text-red-700 rounded-lg">{error}</p>
+      ))}
+      {pollingPaused && (
+        <p role="status" className="text-sm text-amber-800">自动刷新已暂停，任务可能仍在后台处理。点击“刷新状态”继续查看。</p>
+      )}
+      {loadError && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
-          加载失败：{loadError}
+          刷新失败：{loadError}；已有状态可能不是最新。
           <button onClick={loadData} className="ml-3 underline">重试</button>
         </div>
-      ) : isLoading ? (
+      )}
+      {isLoading && documents.length === 0 ? (
         <div className="flex justify-center py-8">
           <div className="w-8 h-8 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
         </div>
@@ -243,14 +219,16 @@ const KnowledgeBasePage = () => {
                 <div>
                   <p className="font-medium text-gray-900">{doc.name}</p>
                   <p className="text-sm text-gray-500">{doc.chunk_count} 个知识片段</p>
+                  {doc.status === 'failed' && <p role="alert" className="mt-1 text-sm text-red-700">{doc.error || '处理失败，请重新提交文档。'}</p>}
                 </div>
               </div>
               <span className={`px-3 py-1 text-xs font-medium rounded-full ${
                 doc.status === 'completed' ? 'bg-success/10 text-success' :
                 doc.status === 'processing' ? 'bg-primary/10 text-primary' :
+                doc.status === 'failed' ? 'bg-red-50 text-red-700' :
                 'bg-gray-100 text-gray-500'
               }`}>
-                {doc.status === 'completed' ? '已索引' : doc.status === 'processing' ? '处理中' : '待处理'}
+                {doc.status === 'completed' ? '已完成' : doc.status === 'processing' ? '处理中' : doc.status === 'failed' ? '失败' : doc.status === 'queued' ? '排队中' : '待处理'}
               </span>
             </div>
           ))}
@@ -261,15 +239,15 @@ const KnowledgeBasePage = () => {
         <h4 className="font-medium text-gray-900 mb-2">知识库统计</h4>
         <div className="grid grid-cols-3 gap-4 text-center">
           <div>
-            <p className="text-2xl font-bold text-primary">{stats?.total_documents || documents.length}</p>
+            <p className="text-2xl font-bold text-primary">{stats?.total_documents ?? documents.length}</p>
             <p className="text-xs text-gray-500">文档总数</p>
           </div>
           <div>
-            <p className="text-2xl font-bold text-primary">{stats?.total_chunks || documents.reduce((acc, d) => acc + d.chunk_count, 0)}</p>
+            <p className="text-2xl font-bold text-primary">{stats?.total_chunks ?? documents.reduce((acc, d) => acc + d.chunk_count, 0)}</p>
             <p className="text-xs text-gray-500">知识片段</p>
           </div>
           <div>
-            <p className="text-2xl font-bold text-success">{Object.keys(stats?.documents_by_category || {}).length || 3}</p>
+            <p className="text-2xl font-bold text-success">{Object.keys(stats?.documents_by_category || {}).length}</p>
             <p className="text-xs text-gray-500">已分类</p>
           </div>
         </div>

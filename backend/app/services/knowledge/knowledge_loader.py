@@ -4,6 +4,7 @@
 import os
 import re
 from typing import List, Optional
+from app.config import settings
 from app.services.knowledge.document_processor import DocumentProcessor, TextChunk
 from app.services.knowledge.vector_store import get_vector_store, VectorStore
 
@@ -60,11 +61,7 @@ class KnowledgeLoader:
             return
 
         # 2. 真的空，扫描原始数据目录并嵌入
-        path = __file__
-        for _ in range(5):
-            path = os.path.dirname(path)
-        project_root = path
-        data_dir = os.path.join(project_root, '原始数据')
+        data_dir = str(settings.KNOWLEDGE_DATA_DIR)
 
         if os.path.exists(data_dir):
             print(f"[KnowledgeLoader] ChromaDB empty, loading from {data_dir} ...")
@@ -181,11 +178,7 @@ def load_knowledge_to_vectorstore(data_dir: str = None) -> dict:
         加载统计信息
     """
     if data_dir is None:
-        path = __file__
-        for _ in range(5):
-            path = os.path.dirname(path)
-        project_root = path
-        data_dir = os.path.join(project_root, '原始数据')
+        data_dir = str(settings.KNOWLEDGE_DATA_DIR)
 
     loader = KnowledgeLoader()
     return loader.load_all_books(data_dir)
@@ -228,11 +221,7 @@ def reset_knowledge_loader():
 
 if __name__ == "__main__":
     # 测试加载
-    path = __file__
-    for _ in range(5):
-        path = os.path.dirname(path)
-    project_root = path
-    data_dir = os.path.join(project_root, '原始数据')
+    data_dir = str(settings.KNOWLEDGE_DATA_DIR)
 
     print("开始加载知识库...")
     stats = load_knowledge_to_vectorstore(data_dir)

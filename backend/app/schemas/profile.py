@@ -1,7 +1,7 @@
 """
 User profile and stats management
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 
@@ -40,8 +40,18 @@ class UserProfileResponse(BaseModel):
 
 class SkillLevelUpdate(BaseModel):
     """Update skill self-assessment"""
-    skill_name: str
-    level: int
+    skill_name: str = Field(..., min_length=1, max_length=100)
+    level: int = Field(..., ge=1, le=5, strict=True)
+
+    @field_validator("skill_name", mode="before")
+    @classmethod
+    def trim_skill_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class AvatarUpdate(BaseModel):
+    """Avatar URL sent in the client's JSON body."""
+    avatar_url: str = Field(..., min_length=1, max_length=500)
 
 
 class UserStatsResponse(BaseModel):
