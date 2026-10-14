@@ -1,7 +1,7 @@
 """
 Authentication schemas for login, register, token refresh
 """
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, ConfigDict, Field, EmailStr, field_validator
 from typing import Optional
 from datetime import datetime
 
@@ -19,6 +19,11 @@ class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=6)
     full_name: Optional[str] = None
+
+
+class RefreshTokenRequest(BaseModel):
+    """Refresh credentials arrive in the JSON body used by the client."""
+    refresh_token: str = Field(..., min_length=1)
 
 
 class TokenResponse(BaseModel):
@@ -51,16 +56,24 @@ class UserResponse(BaseModel):
     created_at: datetime
     last_login_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserUpdate(BaseModel):
     """User update schema"""
-    full_name: Optional[str] = None
-    phone: Optional[str] = None
-    avatar_url: Optional[str] = None
+    email: Optional[EmailStr] = Field(default=None, max_length=255)
+    username: Optional[str] = Field(default=None, min_length=3, max_length=50)
+    full_name: Optional[str] = Field(default=None, max_length=100)
+    phone: Optional[str] = Field(default=None, max_length=20)
+    avatar_url: Optional[str] = Field(default=None, max_length=500)
     bio: Optional[str] = None
+
+    @field_validator("email", "username", mode="before")
+    @classmethod
+    def required_account_value(cls, value):
+        if value is None:
+            raise ValueError("Account identity fields cannot be null")
+        return value.strip() if isinstance(value, str) else value
 
 
 # 解析前向引用 — TokenResponse.user 引用了本文件中的 UserResponse

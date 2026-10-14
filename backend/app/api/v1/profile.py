@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 from app.database import get_db
 from app.models.user import User
+from app.models.profile import UserSkillLevel
 from app.models.practice import PracticeSession, PracticeSummary
 from app.schemas.auth import UserResponse
 from app.schemas.profile import (
@@ -15,7 +16,8 @@ from app.schemas.profile import (
     UserProfileStats,
     SkillLevel,
     SkillLevelUpdate,
-    UserStatsResponse
+    UserStatsResponse,
+    AvatarUpdate,
 )
 from app.core.security import get_current_user
 
@@ -64,13 +66,14 @@ async def get_user_profile(
         avg_scores = {'communication': 0, 'persuasion': 0, 'closing': 0, 'spin': 0}
 
     # Default skills
-    default_skills = [
-        SkillLevel(skill_name="开场破冰", level=3, last_updated=datetime.utcnow()),
-        SkillLevel(skill_name="需求挖掘", level=2, last_updated=datetime.utcnow()),
-        SkillLevel(skill_name="产品呈现", level=3, last_updated=datetime.utcnow()),
-        SkillLevel(skill_name="异议处理", level=2, last_updated=datetime.utcnow()),
-        SkillLevel(skill_name="促成成交", level=1, last_updated=datetime.utcnow())
-    ]
+    skills = {
+        name: SkillLevel(skill_name=name, level=level, last_updated=current_user.created_at)
+        for name, level in (("开场破冰", 3), ("需求挖掘", 2), ("产品呈现", 3), ("异议处理", 2), ("促成成交", 1))
+    }
+    for saved in db.query(UserSkillLevel).filter(UserSkillLevel.user_id == current_user.id).all():
+        skills[saved.skill_name] = SkillLevel(
+            skill_name=saved.skill_name, level=saved.level, last_updated=saved.last_updated,
+        )
 
     stats = UserProfileStats(
         total_sessions=total_sessions,
@@ -78,7 +81,7 @@ async def get_user_profile(
         total_duration_minutes=int(total_duration),
         avg_score=sum(avg_scores.values()) / len(avg_scores) if avg_scores else 0,
         phases_mastered=['opening'],  # placeholder
-        skills=default_skills
+        skills=list(skills.values())
     )
 
     return UserProfileResponse(
@@ -172,32 +175,40 @@ async def update_skills(
     """
     Update user skill self-assessment levels
     """
-    updated_skills = []
+    # Validate the entire JSON list before mutating anything (schema validation
+    # has completed before this handler), then commit all levels together.
+    saved_levels = {
+        saved.skill_name: saved
+        for saved in db.query(UserSkillLevel).filter(UserSkillLevel.user_id == current_user.id).all()
+    }
+    updated_skills = {}
     for update in updates:
-        if update.level < 1 or update.level > 5:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"技能等级必须在1-5之间: {update.skill_name}"
-            )
-        updated_skills.append(SkillLevel(
+        saved = saved_levels.get(update.skill_name)
+        if saved is None:
+            saved = UserSkillLevel(user_id=current_user.id, skill_name=update.skill_name)
+            db.add(saved)
+            saved_levels[update.skill_name] = saved
+        saved.level = update.level
+        saved.last_updated = datetime.utcnow()
+        updated_skills[update.skill_name] = SkillLevel(
             skill_name=update.skill_name,
             level=update.level,
-            last_updated=datetime.utcnow()
-        ))
+            last_updated=saved.last_updated,
+        )
 
-    # In production, save to database
-    return updated_skills
+    db.commit()
+    return list(updated_skills.values())
 
 
 @router.post("/me/avatar")
 async def upload_avatar(
-    avatar_url: str,
+    request: AvatarUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
     Upload/update user avatar
     """
-    current_user.avatar_url = avatar_url
+    current_user.avatar_url = request.avatar_url
     db.commit()
-    return {"message": "头像已更新", "avatar_url": avatar_url}
+    return {"message": "头像已更新", "avatar_url": request.avatar_url}

@@ -9,11 +9,12 @@ import base64
 import asyncio
 import logging
 import ssl
+from pathlib import Path
 import websockets
 from datetime import datetime
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -31,13 +32,16 @@ from app.config import settings
 from app.api.v1 import router as api_v1_router
 from app.websocket.manager import manager, session_manager, ConversationState
 from app.database import engine, Base, SessionLocal
-from app.models.practice import PracticeMessage
+from app.models.practice import PracticeMessage, PracticeSession, Scenario
+from app.models.user import User
+from app.core.security import get_current_user, get_user_id_from_token
+from app.services.audio.files import convert_audio_to_pcm, purge_debug_audio
+from sqlalchemy import text
 from app.services.llm import get_minimax_service
 from app.services.knowledge.service import get_knowledge_service
 from app.services.audio.backchannel import backchannel_manager
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Tables are initialized during startup, never as a side effect of importing a module.
 
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
@@ -104,53 +108,39 @@ async def _daily_brief_push():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时：跑一次（让新装的服务能立即看到今天的数据）
-    # ⚠️ 临时禁用：industry_brief 会跑 10+ 次 chat completion 调用、持锁 30-60s，
-    # 阻塞所有 /api 请求。生产部署时再打开。
-    # asyncio.create_task(_daily_brief_push())
-    # 8:30 (Asia/Shanghai) 每天定时 — 早间简报推送
-    scheduler.add_job(
-        _daily_brief_push,
-        trigger=CronTrigger(hour=8, minute=30, timezone="Asia/Shanghai"),
-        id="daily_brief_push",
-        replace_existing=True,
-        max_instances=1,
-    )
-    scheduler.start()
-    logger.info("[scheduler] APScheduler started: daily_brief_push @ 08:30 Asia/Shanghai")
-    # 预热 BGE 嵌入模型：第一次 RAG 检索会触发 60s+ 懒加载，挪到启动时。
-    # 同步跑（不需要等），放后台 task 即可。
-    async def _warmup_embedding():
-        try:
+    Base.metadata.create_all(bind=engine)
+    from app.api.v1.knowledge import recover_interrupted_ingestions
+    recover_interrupted_ingestions()
+    debug_dir = Path(__file__).resolve().parent / "data" / "asr_debug"
+    purge_debug_audio(debug_dir, settings.AUDIO_DEBUG_RETENTION_HOURS)
+    if settings.ENABLE_SCHEDULER:
+        scheduler.add_job(_daily_brief_push, trigger=CronTrigger(hour=8, minute=30, timezone="Asia/Shanghai"),
+                          id="daily_brief_push", replace_existing=True, max_instances=1)
+        scheduler.add_job(lambda: purge_debug_audio(debug_dir, settings.AUDIO_DEBUG_RETENTION_HOURS),
+                          trigger="interval", hours=1, id="audio_debug_cleanup", replace_existing=True)
+        scheduler.start()
+    tasks = []
+    if settings.ENABLE_MODEL_WARMUP:
+        def warm_embedding():
             from app.services.knowledge.embedding import get_embedding_model
-            embedder = get_embedding_model()
-            embedder.embed_query("warmup")
-            logger.info("[warmup] BGE embedding model ready")
-        except Exception as e:
-            logger.warning(f"[warmup] BGE warmup failed (will lazy-load on first request): {e}")
-    asyncio.create_task(_warmup_embedding())
-
-    # 预热 whisper 模型：ASR 首次请求触发 2-3s 模型加载，挪到启动时。
-    async def _warmup_whisper():
-        try:
-            from app.services.llm.minimax import get_minimax_service
-            svc = get_minimax_service()
-            # 触发 faster_whisper 模型 lazy 加载（speech_to_text_local 内部）
-            # 用空字符串（避免实际推理）
-            # 实际上 _load_model 是在 import 后第一次 .transcribe 才触发
-            # 所以只 import 不调也可以 warmup SentenceTransformer / torch
+            get_embedding_model().embed_query("warmup")
+        def warm_whisper():
             import faster_whisper
-            logger.info("[warmup] faster_whisper importable")
-        except Exception as e:
-            logger.warning(f"[warmup] whisper warmup skipped: {e}")
-    asyncio.create_task(_warmup_whisper())
-    # 打印已注册 job 列表便于排错
-    for job in scheduler.get_jobs():
-        logger.info(f"[scheduler] job: id={job.id} next_run={job.next_run_time}")
+        async def warmup(function):
+            try:
+                await asyncio.to_thread(function)
+            except Exception:
+                logger.warning("Optional model warmup failed; model will load on demand")
+        tasks = [asyncio.create_task(warmup(warm_embedding)), asyncio.create_task(warmup(warm_whisper))]
     try:
         yield
     finally:
-        scheduler.shutdown(wait=False)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
@@ -191,6 +181,21 @@ async def root():
 async def health_check():
     """Health check"""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Local readiness only: does not call AI providers or download models."""
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "database": "unavailable"})
+    knowledge_root = settings.KNOWLEDGE_DATA_DIR
+    return {"status": "ready", "database": "ok",
+            "knowledge_directory": "configured" if knowledge_root.is_dir() else "missing",
+            "ai_provider": "configured" if settings.MINIMAX_API_KEY else "not_configured",
+            "external_services": "not_checked"}
 
 
 # =============================================================================
@@ -749,75 +754,49 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     3. Send immediate fallback message so the UI has something to show
     4. Enter receive loop and dispatch incoming client messages
     """
+    header = websocket.headers.get("authorization", "")
+    token = header[7:] if header.lower().startswith("bearer ") else None
+    if not header:
+        tokens = [protocol[7:] for protocol in websocket.scope.get("subprotocols", [])
+                  if protocol.startswith("bearer.")]
+        token = tokens[0] if len(tokens) == 1 else None
+    origin = websocket.headers.get("origin")
+    if origin and origin not in settings.CORS_ORIGINS:
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
+    user_id = get_user_id_from_token(token) if token else None
+    if not user_id:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+    with SessionLocal() as db:
+        user = db.get(User, user_id)
+        persisted = db.get(PracticeSession, session_id)
+        if not user or not user.is_active or not persisted or persisted.user_id != user.id or persisted.status != "active":
+            await websocket.close(code=1008, reason="Session access denied")
+            return
+        role_config = persisted.role_config or {}
+        scenario_id = persisted.scenario_id or ""
+        customer_context = persisted.customer_context
+        investigation_result = persisted.investigation_result
+        user_context = persisted.user_context
+        scenario = db.get(Scenario, scenario_id) if scenario_id else None
+        scenario_name = scenario.name if scenario else "AI客户"
     await manager.connect(websocket, session_id)
-    print(f"[WS] Connected: {session_id}")
-
-    await safe_send_status(session_id, ConversationState.IDLE,
-                           {"phase": "preparing_persona"})
-
-    # ------------------------------------------------------------------
-    # Load / create session
-    # ------------------------------------------------------------------
-    session_info = session_manager.get_session_info(session_id)
-    if not session_info:
-        role_config = {}
-        scenario_id = ""
-        customer_context = None
-        investigation_result = None
-        user_context = None
-        scenario_name = "AI客户"
-        try:
-            from app.database import get_db
-            from app.models.practice import PracticeSession, Scenario
-            db = next(get_db())
-            db_session = db.query(PracticeSession).filter(
-                PracticeSession.id == session_id
-            ).first()
-            if db_session:
-                role_config = db_session.role_config or {}
-                scenario_id = db_session.scenario_id or ""
-                customer_context = db_session.customer_context
-                investigation_result = db_session.investigation_result
-                user_context = db_session.user_context
-                if scenario_id:
-                    db_scenario = db.query(Scenario).filter(
-                        Scenario.id == scenario_id
-                    ).first()
-                    if db_scenario:
-                        scenario_name = db_scenario.name
-        except Exception as e:
-            print(f"[WS] Failed to load session: {e}")
-
-        session_manager.create_session(
-            session_id, scenario_id, role_config,
-            customer_context, investigation_result, user_context
-        )
-    else:
-        # Reuse persisted session - load role_config from DB to be safe
-        role_config = session_info.get("role_config", {})
-        scenario_id = session_info.get("scenario_id", "")
-        customer_context = session_info.get("customer_context")
-        investigation_result = session_info.get("investigation_result")
-        user_context = session_info.get("user_context")
-        scenario_name = "AI客户"
-        if not scenario_name or scenario_name == "AI客户":
-            try:
-                from app.database import get_db
-                from app.models.practice import Scenario
-                db = next(get_db())
-                if scenario_id:
-                    db_scenario = db.query(Scenario).filter(
-                        Scenario.id == scenario_id
-                    ).first()
-                    if db_scenario:
-                        scenario_name = db_scenario.name
-            except Exception:
-                pass
+    await safe_send_status(session_id, ConversationState.IDLE, {"phase": "preparing_persona"})
+    if not session_manager.get_session_info(session_id):
+        session_manager.create_session(session_id, scenario_id, role_config,
+                                       customer_context, investigation_result, user_context)
+    tasks = set()
+    def spawn(coroutine):
+        task = asyncio.create_task(coroutine)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return task
 
     # ------------------------------------------------------------------
     # Fire-and-forget persona + opening message (slow LLM)
     # ------------------------------------------------------------------
-    asyncio.create_task(_init_persona_and_first_message(
+    spawn(_init_persona_and_first_message(
         websocket, session_id, scenario_name, scenario_id, role_config
     ))
 
@@ -863,85 +842,6 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # 流程：voice_start 启动 realtime_voice_chat task
     #       binary 帧 → ffmpeg 转 wav → 推 realtime
     #       realtime audio delta → 推 WS binary frame 到客户端
-    pcm_queue: asyncio.Queue = asyncio.Queue()  # 推 PCM chunks 给 Realtime
-    realtime_task: Optional[asyncio.Task] = None
-    voice_active: bool = False
-
-    async def _ffmpeg_to_pcm(webm_bytes: bytes, mime: str) -> Optional[bytes]:
-        """webm/wav → 24kHz mono s16le PCM"""
-        import subprocess, tempfile
-        try:
-            ext = '.wav' if 'wav' in mime else '.webm'
-            src = tempfile.mktemp(suffix=ext)
-            dst = tempfile.mktemp(suffix='.pcm')
-            with open(src, 'wb') as f:
-                f.write(webm_bytes)
-            proc = await asyncio.to_thread(lambda: subprocess.run([
-                'ffmpeg', '-y', '-loglevel', 'error',
-                '-i', src, '-ar', '24000', '-ac', '1', '-f', 's16le', dst,
-            ], capture_output=True, timeout=10))
-            if proc.returncode != 0:
-                os.unlink(src); os.unlink(dst)
-                return None
-            with open(dst, 'rb') as f:
-                pcm = f.read()
-            os.unlink(src); os.unlink(dst)
-            return pcm
-        except Exception as e:
-            print(f"[Realtime] ffmpeg error: {e}")
-            return None
-
-    async def _realtime_voice_chat_runner():
-        """启动 Realtime 多模态 session，推 audio + 收 audio/text delta 推到 WS。"""
-        from app.services.llm.minimax import get_minimax_service
-        svc = get_minimax_service()
-        try:
-            async def pcm_source():
-                while True:
-                    pcm = await pcm_queue.get()
-                    if pcm is None:  # 终止信号
-                        break
-                    yield pcm
-
-            async def on_text_delta(text):
-                # 推文本 partial 给前端
-                try:
-                    await safe_send_message(session_id, {
-                        'type': 'ai_text_delta',
-                        'content': text,
-                        'timestamp': time.time(),
-                    })
-                except Exception:
-                    pass
-
-            async def on_audio_delta(audio_bytes):
-                # 推 binary 音频给前端
-                try:
-                    await manager.send_audio_chunk(session_id, audio_bytes)
-                except Exception:
-                    pass
-
-            print(f"[Realtime] starting voice chat...")
-            final_text = await svc.realtime_voice_chat(
-                pcm_source(),
-                on_text_delta,
-                on_audio_delta,
-                voice='male-qn-qingse',
-                system_instruction='你扮演客户李总，45岁制造业总经理。简短的回复1-2句话。',
-            )
-            print(f"[Realtime] done, final: {final_text!r}")
-            try:
-                await safe_send_message(session_id, {
-                    'type': 'ai_streaming_end',
-                    'content': final_text,
-                    'timestamp': time.time(),
-                })
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"[Realtime] error: {e}")
-            import traceback; traceback.print_exc()
-
     # MiniMax Realtime 多模态语音对话 — 边推 audio 边收 audio delta
     # 实测 5s 中文 → 2.1s 收到 first audio delta（豆包级延迟）
     pcm_queue: asyncio.Queue = asyncio.Queue()
@@ -955,28 +855,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # 16KB webm/opus ≈ 1-2s 音频（取决于编码），转码后 ≈ 48KB 24kHz PCM
     _FFMPEG_BATCH_BYTES = 4000  # 4KB ≈ 0.25-0.5s 音频（短句也能转码）
 
-    async def _ffmpeg_to_pcm(audio_bytes: bytes, mime: str) -> Optional[bytes]:
-        """webm/wav → 24kHz mono s16le PCM"""
-        import subprocess, tempfile
-        try:
-            ext = '.wav' if 'wav' in mime else '.webm'
-            src = tempfile.mktemp(suffix=ext)
-            dst = tempfile.mktemp(suffix='.pcm')
-            with open(src, 'wb') as f:
-                f.write(audio_bytes)
-            proc = await asyncio.to_thread(lambda: subprocess.run([
-                'ffmpeg', '-y', '-loglevel', 'error',
-                '-i', src, '-ar', '24000', '-ac', '1', '-f', 's16le', dst,
-            ], capture_output=True, timeout=10))
-            if proc.returncode != 0:
-                return None
-            with open(dst, 'rb') as f:
-                pcm = f.read()
-            os.unlink(src); os.unlink(dst)
-            return pcm
-        except Exception as e:
-            print(f"[Realtime] ffmpeg error: {e}")
-            return None
+    _ffmpeg_to_pcm = convert_audio_to_pcm
 
     async def _realtime_voice_chat_runner():
         from app.services.llm.minimax import get_minimax_service
@@ -1028,7 +907,36 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 print(f"[WS] Error receiving frame: {e}")
                 break
 
+            if raw.get("type") == "websocket.disconnect":
+                break
             if raw.get("type") != "websocket.receive":
+                continue
+            if manager.active_connections.get(session_id) is not websocket:
+                break
+            command = None
+            if raw.get("text"):
+                try:
+                    command = json.loads(raw["text"])
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(command, dict):
+                    continue
+                if command.get("type") == "auth_refresh":
+                    renewed = command.get("access_token")
+                    if not isinstance(renewed, str) or get_user_id_from_token(renewed) != user_id:
+                        await websocket.close(code=1008, reason="Invalid renewed credentials")
+                        break
+                    token = renewed
+            with SessionLocal() as db:
+                user = db.get(User, user_id)
+                active = db.get(PracticeSession, session_id)
+                valid = (get_user_id_from_token(token) == user_id and user and user.is_active
+                         and active and active.user_id == user_id and active.status == "active")
+            if not valid:
+                await websocket.close(code=1008, reason="Session access denied")
+                break
+
+            if command and command.get("type") == "auth_refresh":
                 continue
 
             # Binary 帧 = audio chunk → 累积 + 批量转码 + 推 Realtime
@@ -1052,13 +960,11 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             # Text 帧 = JSON 命令
             text = raw.get("text")
             if not text: continue
-            try:
-                data = json.loads(text)
-            except: continue
+            data = command or {}
             msg_type = data.get("type")
 
             if msg_type == "user_message":
-                asyncio.create_task(process_user_message(
+                spawn(process_user_message(
                     websocket, session_id,
                     data.get("content", ""),
                     data.get("audio_data", ""),
@@ -1082,19 +988,18 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 # 启动 Realtime voice chat task
                 if realtime_task and not realtime_task.done():
                     realtime_task.cancel()
-                realtime_task = asyncio.create_task(_realtime_voice_chat_runner())
+                realtime_task = spawn(_realtime_voice_chat_runner())
             elif msg_type == "voice_end":
                 voice_active = False
                 await safe_send_status(session_id, ConversationState.IDLE)
-                # 推 None 终止信号
-                await pcm_queue.put(None)
-                # 推累积的 audio（防止最后一段没推）
+                # Flush the final audio BEFORE the terminal queue marker.
                 async with stream_lock:
-                    if stream_buffer:
-                        all_audio = b"".join(stream_buffer)
-                        stream_buffer.clear()
-                pcm = await _ffmpeg_to_pcm(all_audio, stream_mime) if stream_buffer or all_audio else None
-                if pcm: await pcm_queue.put(pcm)
+                    all_audio = b"".join(stream_buffer)
+                    stream_buffer.clear()
+                pcm = await _ffmpeg_to_pcm(all_audio, stream_mime) if all_audio else None
+                if pcm:
+                    await pcm_queue.put(pcm)
+                await pcm_queue.put(None)
                 # 等 realtime_task 完（最多 30s）
                 if realtime_task and not realtime_task.done():
                     try: await asyncio.wait_for(realtime_task, timeout=30)
@@ -1111,8 +1016,12 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     finally:
+        for task in list(tasks):
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*list(tasks), return_exceptions=True)
         manager.disconnect(websocket)
-        session_manager.end_session(session_id)
+        # Transport loss does not finish a practice; the explicit end API does.
 
 
 # =============================================================================
@@ -1125,7 +1034,7 @@ class TTSRequest(BaseModel):
 
 
 @app.post("/api/v1/tts")
-async def text_to_speech(request: TTSRequest):
+async def text_to_speech(request: TTSRequest, current_user: User = Depends(get_current_user)):
     minimax = get_minimax_service()
     if not minimax.api_key:
         return {"error": "MINIMAX_API_KEY not configured"}
@@ -1143,7 +1052,7 @@ async def text_to_speech(request: TTSRequest):
 
 
 @app.post("/api/v1/asr")
-async def speech_to_text(audio: UploadFile = File(...)):
+async def speech_to_text(audio: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     minimax = get_minimax_service()
     if not minimax.api_key:
         return {"error": "MINIMAX_API_KEY not configured"}
@@ -1161,7 +1070,7 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/v1/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, current_user: User = Depends(get_current_user)):
     minimax = get_minimax_service()
     if not minimax.api_key:
         return {"error": "MINIMAX_API_KEY not configured"}
@@ -1177,5 +1086,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "8002")),
+        port=settings.PORT,
     )

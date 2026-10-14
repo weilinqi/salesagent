@@ -42,7 +42,8 @@ class ConnectionManager:
 
         # 1. Accept the NEW connection first (must happen before any
         #    send/recv on it).
-        await websocket.accept()
+        protocols = getattr(websocket, "scope", {}).get("subprotocols", [])
+        await websocket.accept(subprotocol="salesagent" if "salesagent" in protocols else None)
 
         # 2. If an old connection exists for this session, close it.
         old_ws = self.active_connections.get(session_id)
@@ -66,7 +67,7 @@ class ConnectionManager:
         session_id = self.connection_sessions.pop(websocket, None)
         print(f"[WS MGR] disconnect() called for session {session_id}", flush=True)
         sys.stdout.flush()
-        if session_id:
+        if session_id and self.active_connections.get(session_id) is websocket:
             self.active_connections.pop(session_id, None)
             self.session_states.pop(session_id, None)
 
@@ -79,7 +80,7 @@ class ConnectionManager:
                 return True
             except Exception:
                 # Client disconnected - remove from active connections
-                self.active_connections.pop(session_id, None)
+                self.disconnect(websocket)
                 return False
         return False
 
@@ -90,7 +91,7 @@ class ConnectionManager:
             try:
                 await websocket.send_bytes(chunk)
             except Exception:
-                self.active_connections.pop(session_id, None)
+                self.disconnect(websocket)
 
     async def send_status(self, session_id: str, state: ConversationState, metadata: dict = None):
         """Send state update to client"""

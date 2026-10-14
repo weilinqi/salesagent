@@ -34,7 +34,7 @@ const SystemSettingsPage = () => {
     email_limit_daily: 100,
 
     // Security
-    jwt_expiry_hours: 24,
+    jwt_expiry_hours: 0.5,
     refresh_token_days: 7,
     max_login_attempts: 5,
     password_min_length: 6
@@ -47,18 +47,13 @@ const SystemSettingsPage = () => {
     { key: 'security', label: '安全' }
   ]
 
-  const handleSave = async () => {
-    await new Promise(resolve => setTimeout(resolve, 500))
-    alert('设置已保存')
-  }
-
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white shadow-sm">
         <div className="max-w-4xl mx-auto px-4 py-4">
           <h1 className="text-2xl font-bold text-gray-900">系统设置</h1>
-          <p className="text-sm text-gray-500 mt-1">配置平台全局设置</p>
+          <p className="text-sm text-gray-500 mt-1">演示页面：全局设置暂未接入保存接口，修改不会生效。</p>
         </div>
       </header>
 
@@ -140,10 +135,10 @@ const SystemSettingsPage = () => {
 
                 <div className="flex justify-end pt-4 border-t">
                   <button
-                    onClick={handleSave}
-                    className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90"
+                    disabled title="演示页面暂不支持保存"
+                    className="px-6 py-2 bg-primary text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    保存设置
+                    暂不支持保存
                   </button>
                 </div>
               </div>
@@ -212,10 +207,10 @@ const SystemSettingsPage = () => {
 
                 <div className="flex justify-end pt-4 border-t">
                   <button
-                    onClick={handleSave}
-                    className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90"
+                    disabled title="演示页面暂不支持保存"
+                    className="px-6 py-2 bg-primary text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    保存设置
+                    暂不支持保存
                   </button>
                 </div>
               </div>
@@ -267,10 +262,10 @@ const SystemSettingsPage = () => {
 
                 <div className="flex justify-end pt-4 border-t">
                   <button
-                    onClick={handleSave}
-                    className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90"
+                    disabled title="演示页面暂不支持保存"
+                    className="px-6 py-2 bg-primary text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    保存设置
+                    暂不支持保存
                   </button>
                 </div>
               </div>
@@ -316,10 +311,10 @@ const SystemSettingsPage = () => {
 
                 <div className="flex justify-end pt-4 border-t">
                   <button
-                    onClick={handleSave}
-                    className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90"
+                    disabled title="演示页面暂不支持保存"
+                    className="px-6 py-2 bg-primary text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    保存设置
+                    暂不支持保存
                   </button>
                 </div>
               </div>

@@ -145,11 +145,9 @@ class MiniMaxService:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
 
-        # 当前 websockets 库版本用 extra_headers（不是 additional_headers）
-        ws_cm = websockets.connect(url, extra_headers=headers, ssl=ssl_context)
+        # websockets 16 uses additional_headers; TLS certificate checks remain enabled.
+        ws_cm = websockets.connect(url, additional_headers=headers, ssl=ssl_context)
         async with ws_cm as ws:
             # Wait for connection confirmation
             conn_resp = json.loads(await ws.recv())
@@ -360,40 +358,13 @@ class MiniMaxService:
             "audio/m4a": ".m4a",
         }
         ext = ext_map.get(audio_mime.split(";")[0].strip().lower(), ".webm")
-        src_path = tempfile.mktemp(suffix=ext)
-        with open(src_path, "wb") as f:
-            f.write(audio_data)
-        pcm_path = src_path + ".pcm"
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-i", src_path,
-                    "-ar", "24000", "-ac", "1",
-                    "-f", "s16le", pcm_path,
-                ],
-                check=True, capture_output=True, timeout=30,
-            )
-        except Exception as ffmpeg_err:
-            print(f"[ASR-Realtime] ffmpeg convert failed: {ffmpeg_err}")
-            try:
-                os.unlink(src_path)
-            except Exception:
-                pass
+        from app.services.audio.files import convert_audio_to_pcm
+        pcm_bytes = await convert_audio_to_pcm(audio_data, audio_mime)
+        if not pcm_bytes:
             return ""
-
-        with open(pcm_path, "rb") as f:
-            pcm_bytes = f.read()
-        try:
-            os.unlink(src_path)
-            os.unlink(pcm_path)
-        except Exception:
-            pass
 
         # Step 2-5: WS to Realtime API
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
 
         url = "wss://api.minimaxi.com/ws/v1/realtime"
         # Strong prompt that suppresses greetings and explanations
@@ -406,7 +377,7 @@ class MiniMaxService:
         try:
             async with websockets.connect(
                 url,
-                extra_headers={"Authorization": f"Bearer {self.api_key}"},
+                additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
                 max_size=10 * 1024 * 1024,
             ) as ws:
@@ -523,8 +494,6 @@ class MiniMaxService:
         import websockets
 
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
 
         url = "wss://api.minimaxi.com/ws/v1/realtime"
         instruction = session_instruction or (
@@ -535,7 +504,7 @@ class MiniMaxService:
         try:
             async with websockets.connect(
                 url,
-                extra_headers={"Authorization": f"Bearer {self.api_key}"},
+                additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
                 max_size=10 * 1024 * 1024,
             ) as ws:
@@ -647,8 +616,6 @@ class MiniMaxService:
 
         # Make sure hf-mirror is the source (Windows SSL workaround).
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-        _orig_ctx = ssl._create_default_https_context
-        ssl._create_default_https_context = ssl._create_unverified_context
 
         # faster-whisper / ffmpeg need a real file. Write to a temp file with
         # the right extension so the decoder picks the right format.
@@ -667,16 +634,12 @@ class MiniMaxService:
         # Load model once and cache on the instance. Use 'small' for
         # significantly better Chinese accuracy. 'base' makes too many
         # Chinese character errors on browser-recorded audio.
-        try:
-            if not hasattr(self, "_whisper_model") or self._whisper_model is None:
-                print("[ASR-Local] Loading faster-whisper 'small' model...")
-                self._whisper_model = WhisperModel(
-                    "small", device="cpu", compute_type="int8"
-                )
-                print("[ASR-Local] Model ready.")
-            model = self._whisper_model
-        finally:
-            ssl._create_default_https_context = _orig_ctx
+        if not hasattr(self, "_whisper_model") or self._whisper_model is None:
+            print("[ASR-Local] Loading faster-whisper 'small' model...")
+            self._whisper_model = await asyncio.to_thread(
+                WhisperModel, "small", device="cpu", compute_type="int8"
+            )
+        model = self._whisper_model
 
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             tmp.write(audio_data)
@@ -695,7 +658,8 @@ class MiniMaxService:
         # NOTE: avoid silenceremove here — browser recordings of normal
         # speech through speakers are often below -40dB and the filter
         # would wipe them out.
-        wav_path = tmp_path + ".wav"
+        processed_path = tmp_path + ".wav"
+        wav_path = processed_path
         try:
             subprocess.run(
                 [
@@ -711,17 +675,16 @@ class MiniMaxService:
             print(f"[ASR-Local] ffmpeg preprocess failed: {ffmpeg_err}, falling back to raw input")
             wav_path = tmp_path
 
-        # Keep the last audio file for inspection.
+        # Diagnostic recording retention is explicit and disabled by default.
         try:
-            import shutil
-            debug_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "data", "asr_debug"
-            )
-            os.makedirs(debug_dir, exist_ok=True)
-            shutil.copy(wav_path, os.path.join(debug_dir, f"last_user_audio_processed.wav"))
-        except Exception as e:
-            print(f"[ASR-Local] debug save failed: {e}")
+            from pathlib import Path
+            from app.config import settings
+            from app.services.audio.files import retain_debug_audio
+            retain_debug_audio(Path(wav_path), enabled=settings.AUDIO_DEBUG_ENABLED,
+                directory=Path(__file__).resolve().parents[2] / "data" / "asr_debug",
+                retention_hours=settings.AUDIO_DEBUG_RETENTION_HOURS)
+        except OSError:
+            print("[ASR-Local] diagnostic retention failed")
 
         try:
             # Run transcription in a thread so we don't block the event loop
@@ -764,8 +727,8 @@ class MiniMaxService:
             except Exception:
                 pass
             try:
-                if wav_path != tmp_path:
-                    os.unlink(wav_path)
+                if os.path.exists(processed_path):
+                    os.unlink(processed_path)
             except Exception:
                 pass
 
@@ -1136,21 +1099,12 @@ class MiniMaxService:
         import websockets
 
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
 
-        try:
-            ws_cm = websockets.connect(
-                'wss://api.minimaxi.com/ws/v1/realtime',
-                extra_headers={'Authorization': f'Bearer {self.api_key}'},
-                ssl=ssl_ctx,
-            )
-        except TypeError:
-            ws_cm = websockets.connect(
-                'wss://api.minimaxi.com/ws/v1/realtime',
-                additional_headers={'Authorization': f'Bearer {self.api_key}'},
-                ssl=ssl_ctx,
-            )
+        ws_cm = websockets.connect(
+            'wss://api.minimaxi.com/ws/v1/realtime',
+            additional_headers={'Authorization': f'Bearer {self.api_key}'},
+            ssl=ssl_ctx,
+        )
 
         full_text = ""
         async with ws_cm as ws:

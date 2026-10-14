@@ -1,7 +1,7 @@
 """
 Practice API endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
@@ -30,7 +30,23 @@ from app.schemas.practice import (
     AIClientRoleResponse
 )
 
-router = APIRouter(prefix="/practice", tags=["话术对练"])
+async def require_practice_access(request: Request, db: Session = Depends(get_db),
+                                  current_user: User = Depends(get_current_user)):
+    """Every practice route requires login; session routes require ownership."""
+    session_id = request.path_params.get("session_id")
+    if session_id:
+        session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+        if session is None or session.user_id != current_user.id:
+            raise HTTPException(status_code=404, detail="会话不存在")
+    if request.method in {"POST", "PUT", "DELETE", "PATCH"} and any(
+        part in request.url.path for part in ("/scenarios", "/roles")
+    ):
+        if current_user.role not in {"admin", "pm", "fae"} and not current_user.is_superuser:
+            raise HTTPException(status_code=403, detail="需要场景管理权限")
+
+
+router = APIRouter(prefix="/practice", tags=["话术对练"],
+                   dependencies=[Depends(require_practice_access)])
 
 
 # ============== Scenario Endpoints ==============
@@ -100,7 +116,7 @@ async def update_scenario(
     db: Session = Depends(get_db)
 ):
     """更新场景"""
-    db_scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
+    db_scenario = db.query(Scenario).filter(Scenario.id == str(scenario_id)).first()
     if not db_scenario:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -119,7 +135,7 @@ async def update_scenario(
 @router.delete("/scenarios/{scenario_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_scenario(scenario_id: UUID, db: Session = Depends(get_db)):
     """删除场景（仅非内置场景）"""
-    db_scenario = db.query(Scenario).filter(Scenario.id == scenario_id).first()
+    db_scenario = db.query(Scenario).filter(Scenario.id == str(scenario_id)).first()
     if not db_scenario:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -133,7 +149,7 @@ async def delete_scenario(scenario_id: UUID, db: Session = Depends(get_db)):
         )
 
     db.delete(db_scenario)
-    db.commit
+    db.commit()
 
 
 # ============== Session Endpoints ==============
@@ -141,7 +157,7 @@ async def delete_scenario(scenario_id: UUID, db: Session = Depends(get_db)):
 @router.post("/sessions", response_model=SessionCreateResponse)
 async def create_session(
     session_data: SessionCreate,
-    user_id: Optional[UUID] = None,  # Optional: defaults to "anonymous" if not provided
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -166,7 +182,7 @@ async def create_session(
 
     # Create practice session
     # Use default anonymous user if not provided
-    effective_user_id = user_id or "anonymous"
+    effective_user_id = current_user.id
     db_session = PracticeSession(
         scenario_id=str(session_data.scenario_id),
         user_id=effective_user_id,
@@ -212,93 +228,7 @@ async def get_session(session_id: UUID, db: Session = Depends(get_db)):
             detail="会话不存在"
         )
 
-    # Get conversation context from session manager
-    from app.websocket.manager import session_manager
-    context = session_manager.get_context(str(session_id))
-
-    # 如果 session 已结束（WS 断开），从 DB 持久化的 messages 重建 context
-    if not context:
-        db_messages = (
-            db.query(PracticeMessage)
-            .filter(PracticeMessage.session_id == str(session_id))
-            .order_by(PracticeMessage.created_at)
-            .all()
-        )
-        context = [
-            {"role": m.role, "content": m.content} for m in db_messages
-        ]
-
-    if not context:
-        return {
-            "session_id": str(session_id),
-            "overall_score": 0,
-            "situation_score": 0,
-            "problem_score": 0,
-            "implication_score": 0,
-            "need_payoff_score": 0,
-            "key_strengths": [],
-            "areas_for_improvement": [],
-            "next_practice_focus": "暂无对话记录"
-        }
-
-    # Map "ai" to "assistant" for MiniMax API
-    for msg in context:
-        if msg.get("role") == "ai":
-            msg["role"] = "assistant"
-
-    # Call handler to generate SPIN evaluation
-    from app.services.conversation.handler import get_conversation_handler
-    handler = get_conversation_handler()
-
-    # Get customer type from session
-    role_config = session.role_config or {}
-    personality = role_config.get("personality", "decisive")
-    personality_map = {
-        "rational": "analytical",
-        "emotional": "expressive",
-        "hesitant": "amiable",
-        "decisive": "assertive"
-    }
-    customer_type = personality_map.get(personality, "assertive")
-
-    # Generate evaluation
-    evaluation = await handler.evaluate_conversation(context, customer_type)
-
-    # Parse evaluation result (simplified - in production would parse structured JSON)
-    try:
-        import re
-        situation_match = re.search(r'[Ss]ituation.*?(\d+)', evaluation)
-        problem_match = re.search(r'[Pp]roblem.*?(\d+)', evaluation)
-        implication_match = re.search(r'[Ii]mplication.*?(\d+)', evaluation)
-        need_payoff_match = re.search(r'need[- ]payoff.*?(\d+)', evaluation)
-
-        situation_score = int(situation_match.group(1)) if situation_match else 7
-        problem_score = int(problem_match.group(1)) if problem_match else 7
-        implication_score = int(implication_match.group(1)) if implication_match else 7
-        need_payoff_score = int(need_payoff_match.group(1)) if need_payoff_match else 7
-    except:
-        situation_score = 7
-        problem_score = 7
-        implication_score = 7
-        need_payoff_score = 7
-
-    overall_score = (situation_score + problem_score + implication_score + need_payoff_score) / 4 * 10
-
-    return {
-        "session_id": str(session_id),
-        "overall_score": round(overall_score, 1),
-        "situation_score": situation_score * 10,
-        "problem_score": problem_score * 10,
-        "implication_score": implication_score * 10,
-        "need_payoff_score": need_payoff_score * 10,
-        "key_strengths": [
-            "开场破冰自然，能快速建立信任"
-        ],
-        "areas_for_improvement": [
-            "需求挖掘深度可以加强"
-        ],
-        "next_practice_focus": "建议加强Implication（影响）阶段，多追问'这会对您造成什么影响？'"
-    }
+    return session
 
 
 @router.post("/sessions/{session_id}/end")
@@ -310,6 +240,11 @@ async def end_session(session_id: UUID, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在"
         )
+
+    from datetime import datetime
+    session.status = "completed"
+    session.ended_at = datetime.utcnow()
+    db.commit()
 
     # Get conversation context from session manager
     from app.websocket.manager import session_manager
@@ -892,7 +827,7 @@ async def list_sessions(
     page_size: int = 20,
     status: Optional[str] = None,
     scenario_type: Optional[str] = None,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -903,10 +838,7 @@ async def list_sessions(
     - 默认只返回当前用户的会话；admin 可传 ?all=true 看全局
     """
     query = db.query(PracticeSession)
-    if current_user:
-        if current_user.role != "admin":
-            query = query.filter(PracticeSession.user_id == current_user.id)
-    # 兜底：如果没传 user_id 且无登录用户，行为与之前一致（返回全部）
+    query = query.filter(PracticeSession.user_id == current_user.id)
 
     if status:
         query = query.filter(PracticeSession.status == status)
@@ -986,7 +918,7 @@ async def list_sessions(
 @router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats(
     user_id: Optional[str] = None,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -999,7 +931,7 @@ async def get_dashboard_stats(
     from datetime import datetime, timedelta
 
     # 优先 current_user.id（鉴权路径），其次 query 参数（兼容旧调用）
-    effective_user_id = current_user.id if current_user else user_id
+    effective_user_id = current_user.id
 
     query = db.query(PracticeSession)
     if effective_user_id:
@@ -1113,7 +1045,7 @@ async def get_dashboard_stats(
 @router.get("/history/stats", response_model=HistoryStatsResponse)
 async def get_history_stats(
     user_id: Optional[str] = None,
-    current_user: Optional[User] = Depends(get_current_user_optional),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -1125,7 +1057,7 @@ async def get_history_stats(
     """
     from datetime import datetime, timedelta
 
-    effective_user_id = current_user.id if current_user else user_id
+    effective_user_id = current_user.id
 
     base_query = db.query(PracticeSession)
     if effective_user_id:
