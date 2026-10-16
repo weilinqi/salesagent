@@ -3,6 +3,7 @@
  * Supports binary audio chunks, state sync, and backchannel
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
+import type { CustomerPersona } from '../stores/practiceStore'
 
 export type ConversationState = 'idle' | 'user_speaking' | 'ai_speaking' | 'processing'
 
@@ -22,6 +23,8 @@ export interface StreamMessage {
   id?: string
   content?: string
   audio_data?: string
+  asr_text?: string
+  persona?: CustomerPersona
   knowledge_refs?: KnowledgeRef[]
   state?: ConversationState
   timestamp: string
@@ -207,7 +210,7 @@ export const useWebSocket = ({
     // Intentionally do NOT disconnect on cleanup - the WS connection
     // should persist across React re-renders / strict-mode double mounts
     // to avoid spurious "close" events from interrupting the backend.
-  }, [url])
+  }, [url, connect])
 
   return {
     isConnected,
