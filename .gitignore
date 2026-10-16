@@ -1,0 +1,51 @@
+# Secrets: retain templates, never commit local credentials.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python environments, bytecode, and test output.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# JavaScript dependencies and build artifacts.
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local application state and generated data.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+backend/data/
+backend/app/data/
+backend/logs/
+backend/model-cache/
+backend/knowledge/
+原始数据/
+state/
+uploads/
+tmp/
+temp/
+*.log
+build/
+*.egg-info/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local development tooling and operating-system files.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

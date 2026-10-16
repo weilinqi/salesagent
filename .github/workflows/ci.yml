@@ -49,7 +49,14 @@ jobs:
       DATABASE_URL: "sqlite:///:memory:"
       ENABLE_MODEL_WARMUP: "false"
       ENABLE_SCHEDULER: "false"
+      # CI must remain self-contained: never load credentials for external AI services.
+      MINIMAX_API_KEY: ""
+      DEEPSEEK_API_KEY: ""
+      VOLC_API_KEY: ""
+      VOLC_API_SECRET: ""
+      VOLC_APP_ID: ""
       PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
         with:
