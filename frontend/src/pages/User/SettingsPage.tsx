@@ -13,6 +13,7 @@
 import { useState } from 'react'
 import { useAuth } from '../../contexts/AuthContext'
 import authApi from '../../api/auth'
+import { getErrorMessage } from '../../utils/errorMessage'
 
 const SettingsPage = () => {
   const { user } = useAuth()
@@ -60,8 +61,8 @@ const SettingsPage = () => {
       setNewPassword('')
       setConfirmPassword('')
       alert('账号设置已保存')
-    } catch (err: any) {
-      setAccountError(err?.response?.data?.detail || err?.message || '保存失败')
+    } catch (err: unknown) {
+      setAccountError(getErrorMessage(err, '保存失败'))
     } finally {
       setAccountSaving(false)
     }

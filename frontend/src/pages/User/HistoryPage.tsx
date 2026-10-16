@@ -9,9 +9,10 @@
  *
  * Story: 2.3 练习历史记录
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api, { SessionListItem, HistoryStatsResponse } from '../../api/practice'
+import { getErrorMessage } from '../../utils/errorMessage'
 
 const SCENARIO_TYPE_LABELS: Record<string, string> = {
   cold_call: '陌拜电话',
@@ -38,16 +39,11 @@ const HistoryPage = () => {
   const [total, setTotal] = useState(0)
   const [filter, setFilter] = useState({ type: '', dateRange: '30days' })
 
-  useEffect(() => {
-    loadHistory()
-    loadStats()
-  }, [page, filter])
-
-  const loadHistory = async () => {
+  const loadHistory = useCallback(async () => {
     setIsLoading(true)
     setHistoryError(null)
     try {
-      const params: any = { page, page_size: 20 }
+      const params: { page: number; page_size: number; scenario_type?: string } = { page, page_size: 20 }
       if (filter.type) {
         params.scenario_type = filter.type
       }
@@ -64,16 +60,16 @@ const HistoryPage = () => {
       }
       setSessions(data)
       setTotal(response.total)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to load history:', error)
-      setHistoryError(error?.response?.data?.detail || error?.message || '加载历史失败')
+      setHistoryError(getErrorMessage(error, '加载历史失败'))
       setSessions([])
       setTotal(0)
     }
     setIsLoading(false)
-  }
+  }, [filter, page])
 
-  const loadStats = async () => {
+  const loadStats = useCallback(async () => {
     try {
       const response = await api.getHistoryStats()
       setStats(response)
@@ -81,7 +77,12 @@ const HistoryPage = () => {
       console.error('Failed to load stats:', error)
       setStats(null)  // 不再填充假数据，让 UI 显示空状态
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    loadHistory()
+    loadStats()
+  }, [loadHistory, loadStats])
 
   const formatDuration = (minutes: number) => {
     if (minutes < 60) return `${minutes}分钟`

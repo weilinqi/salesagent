@@ -15,6 +15,7 @@ import profileApi, { UserStats as ApiUserStats } from '../../api/profile'
 import authApi from '../../api/auth'
 import practiceApi, { SessionListItem } from '../../api/practice'
 import ScoreChart from '../../components/business/practice/ScoreChart'
+import { getErrorMessage } from '../../utils/errorMessage'
 
 interface UserStats extends ApiUserStats {}
 
@@ -60,9 +61,9 @@ const ProfilePage = () => {
       ])
       setStats(statsData)
       setRecentSessions(sessionsData.data || [])
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to load profile stats:', err)
-      setError(err?.response?.data?.detail || err?.message || '加载用户统计失败')
+      setError(getErrorMessage(err, '加载用户统计失败'))
       setStats(null)
     } finally {
       setIsLoading(false)
@@ -81,9 +82,9 @@ const ProfilePage = () => {
       // 触发 AuthContext 重新拉 /auth/me 刷新 user
       await refreshUser()
       setIsEditing(false)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to save profile:', err)
-      setSaveError(err?.response?.data?.detail || err?.message || '保存失败')
+      setSaveError(getErrorMessage(err, '保存失败'))
     } finally {
       setIsSaving(false)
     }
