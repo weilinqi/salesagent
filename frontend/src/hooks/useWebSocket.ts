@@ -4,6 +4,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createWebSocketConnection } from './webSocketConnection'
+import type { CustomerPersona } from '../stores/practiceStore'
 
 export type ConversationState = 'idle' | 'user_speaking' | 'ai_speaking' | 'processing'
 
@@ -23,6 +24,8 @@ export interface StreamMessage {
   id?: string
   content?: string
   audio_data?: string
+  asr_text?: string
+  persona?: CustomerPersona
   knowledge_refs?: KnowledgeRef[]
   state?: ConversationState
   timestamp: string

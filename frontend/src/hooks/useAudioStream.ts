@@ -6,8 +6,9 @@
  */
 import { useState, useRef, useCallback } from 'react'
 
-// Ensure AudioContext is available
-declare const AudioContext: typeof undefined | ((options?: any) => any)
+interface AudioContextWindow extends Window {
+  webkitAudioContext?: typeof AudioContext
+}
 
 interface UseAudioStreamReturn {
   isPlaying: boolean
@@ -48,7 +49,7 @@ export function useAudioStream(): UseAudioStreamReturn {
 
   const ensureAudioContext = useCallback((): AudioContext | null => {
     if (typeof window === 'undefined') return null
-    const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext
+    const Ctx = window.AudioContext || (window as AudioContextWindow).webkitAudioContext
     if (!Ctx) return null
     const ctx = audioCtxRef.current ?? new Ctx()
     audioCtxRef.current = ctx

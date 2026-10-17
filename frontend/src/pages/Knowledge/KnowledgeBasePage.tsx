@@ -12,6 +12,7 @@
 import { useState, useEffect, useRef } from 'react'
 import api, { createKnowledgeMonitor, initialKnowledgeState } from '../../api/knowledge'
 import type { SearchResult, SpinQuestions } from '../../api/knowledge'
+import { getErrorMessage } from '../../utils/errorMessage'
 
 const KnowledgeBasePage = () => {
   const [activeTab, setActiveTab] = useState('search')
@@ -57,11 +58,11 @@ const KnowledgeBasePage = () => {
     try {
       const response = await api.search(searchQuery, 5)
       setSearchResults(response.results || [])
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Search failed:', error)
       setSearchResults([])  // 失败时不返回任何伪造结果
       setSearchError(
-        error?.response?.data?.detail || error?.message || '搜索失败'
+        getErrorMessage(error, '搜索失败')
       )
     } finally {
       setIsSearching(false)
@@ -85,11 +86,11 @@ const KnowledgeBasePage = () => {
         pain_points: painPointsList
       })
       setSpinQuestions(response)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('SPIN generation failed:', error)
       setSpinQuestions(null)
       setSpinError(
-        error?.response?.data?.detail || error?.message || 'SPIN 生成失败'
+        getErrorMessage(error, 'SPIN 生成失败')
       )
     } finally {
       setIsGeneratingSpin(false)
