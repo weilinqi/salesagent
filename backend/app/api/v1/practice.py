@@ -165,8 +165,8 @@ async def create_session(
         )
 
     # Create practice session
-    # Use default anonymous user if not provided
-    effective_user_id = user_id or "anonymous"
+    # Anonymous sessions have no user foreign key.
+    effective_user_id = str(user_id) if user_id else None
     db_session = PracticeSession(
         scenario_id=str(session_data.scenario_id),
         user_id=effective_user_id,

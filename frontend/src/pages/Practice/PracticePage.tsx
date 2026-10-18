@@ -67,15 +67,7 @@ const PracticePage = () => {
     setRoleConfig(config)
   }
 
-  const handleStartPractice = async () => {
-    if (!selectedScenario || !selectedRoleConfig) return
-
-    // 必须先填销售员档案（userContext）
-    if (!userContext) {
-      setShowUserContextForm(true)
-      return
-    }
-
+  const startPractice = async (context: UserContext) => {
     setIsStarting(true)
     setStartError(null)
 
@@ -84,7 +76,7 @@ const PracticePage = () => {
       const customerContext = spinState?.customerContext ?? spinStore.customerContext ?? undefined
       const investigationResult = spinState?.investigationResult ?? spinStore.investigationResult ?? undefined
 
-      await startSession({ customerContext, investigationResult, userContext })
+      await startSession({ customerContext, investigationResult, userContext: context })
       setCurrentStep('ready')
     } catch (error) {
       setStartError(error instanceof Error ? error.message : '启动对练失败')
@@ -93,11 +85,19 @@ const PracticePage = () => {
     }
   }
 
+  const handleStartPractice = () => {
+    if (!selectedScenario || !selectedRoleConfig) return
+    if (!userContext) {
+      setShowUserContextForm(true)
+      return
+    }
+    void startPractice(userContext)
+  }
+
   const handleUserContextSubmit = (ctx: UserContext) => {
     setUserContext(ctx)
     setShowUserContextForm(false)
-    // 立即触发开始
-    setTimeout(() => handleStartPractice(), 50)
+    void startPractice(ctx)
   }
 
   const handleReset = () => {

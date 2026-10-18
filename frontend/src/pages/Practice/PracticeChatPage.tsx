@@ -155,7 +155,7 @@ const PracticeChatPage = () => {
     if (wsMessage.type === 'ai_streaming_start') {
       // AI response starting - create new message with empty audioData
       const contentPrefix = wsMessage.content || wsMessage.data?.content_prefix as string || ''
-      const newMsgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      const newMsgId = wsMessage.id || `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
       currentAIMessageIdRef.current = newMsgId
       const newMessage: MessageItem = {
         id: newMsgId,

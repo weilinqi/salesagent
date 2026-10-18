@@ -909,6 +909,7 @@ class MiniMaxService:
                 },
                 json=payload
             ) as response:
+                response.raise_for_status()
                 async for line in response.aiter_lines():
                     if line.startswith("data:"):
                         data_str = line[5:].strip()
