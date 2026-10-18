@@ -156,6 +156,7 @@ export const usePracticeStore = create<PracticeState>()(
       return
     }
 
+    set({ scenarioError: null })
     try {
       const response = await api.createSession(
         selectedScenario.id,
@@ -190,6 +191,7 @@ export const usePracticeStore = create<PracticeState>()(
       set({
         scenarioError: error instanceof Error ? error.message : '创建会话失败'
       })
+      throw error
     }
   },
 

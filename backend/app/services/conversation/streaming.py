@@ -18,6 +18,7 @@ import re
 import sys
 import time
 import base64
+import httpx
 from typing import AsyncIterator, List, Optional, Dict, Any, Callable, Awaitable
 
 # Windows CMD 默认 GBK 编码，遇到 emoji / 中日韩生僻字会 UnicodeEncodeError
@@ -451,6 +452,7 @@ async def stream_pipeline(
     tts_tasks: List[asyncio.Task] = []
     t0 = time.time()
     stop_event = asyncio.Event()  # 通知 monitor 退出
+    monitor_task: Optional[asyncio.Task] = None
     try:
         token_count = 0
         first_token_at = None
@@ -514,6 +516,8 @@ async def stream_pipeline(
                 pass
             # 实时把 visible text 推给前端（但 ai_streaming_update content 留空给 LLM 完才发）
         llm_streaming = False
+        if token_count == 0:
+            raise RuntimeError("LLM returned no content")
         end_ms = int((time.time() - t0) * 1000)
         print(f"[STREAM][T={end_ms:>5}ms] ← LLM stream ended, total {token_count} tokens, first_token_at={first_token_at}ms, last_token_at={end_ms}ms")
         # 4. LLM 结束：flush buf 拿到完整内容（不切句，1 句完整 TTS）
@@ -563,10 +567,19 @@ async def stream_pipeline(
         print(f"[STREAM] LLM error: {e}")
         import traceback
         traceback.print_exc()
+        llm_streaming = False
+        stop_event.set()
+        if monitor_task is not None:
+            await monitor_task
+        error_message = (
+            "MiniMax 账户额度不足，暂时无法生成回复。请检查账户余额或套餐额度。"
+            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 402
+            else "AI 服务暂时无法生成回复，请稍后重试。"
+        )
         await websocket_send({
             "type": "ai_streaming_end",
             "id": msg_id,
-            "content": "抱歉，我现在无法回答。",
+            "content": error_message,
             "audio_data": "",
             "timestamp": time.time(),
         })
