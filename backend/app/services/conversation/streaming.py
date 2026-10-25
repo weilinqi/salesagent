@@ -192,10 +192,8 @@ class SentenceBuffer:
 
     def push(self, token: str) -> List[str]:
         """
-        追加新 token，**只累积不切句**（避免 LLM 一次 yield 整句时被切丢内容）。
-        返回空列表（兼容性保留）。
-
-        当前架构：LLM stream 结束时由 caller 调 `flush()` 拿全部内容，统一 1 句 TTS。
+        追加新 token，并返回已经闭合、可立即送去 TTS 的句子。
+        已返回的文本会从内部 buffer 移除，只保留尚未闭合的尾部。
         """
         if not token:
             return []
@@ -204,7 +202,28 @@ class SentenceBuffer:
         if not clean:
             return []
         self._buf += clean
-        # 不切句 — LLM 完时统一处理
+
+        # 优先在句号、问号、感叹号等主边界切分。
+        main_matches = list(_SENTENCE_BOUNDARY.finditer(self._buf))
+        if main_matches:
+            cut = main_matches[-1].end()
+            completed = self._buf[:cut]
+            self._buf = self._buf[cut:]
+            return split_sentences(completed, allow_partial=False)
+
+        # 长句没有主标点时，在逗号或空格处分段，避免 TTS 一直等到 LLM 结束。
+        if len(self._buf) >= _PARTIAL_MIN_CHARS:
+            candidates = [
+                match.end()
+                for match in _PARTIAL_BOUNDARY.finditer(self._buf)
+                if match.end() >= _PARTIAL_MIN_CHARS
+            ]
+            if candidates:
+                cut = candidates[-1]
+                completed = self._buf[:cut].strip()
+                self._buf = self._buf[cut:]
+                if completed:
+                    return [completed]
         return []
 
     def _strip_think(self, token: str) -> str:
@@ -300,6 +319,21 @@ async def sentence_to_audio_stream(
     except Exception as e:
         print(f"[TTS] stream failed ({int((time.time()-t_tts)*1000)}ms): {e}")
         return b""
+
+
+async def warmup_knowledge_retrieval(handler) -> bool:
+    """Prime the lazy knowledge stack without blocking the event loop."""
+    try:
+        await asyncio.to_thread(
+            handler._retrieve_knowledge_references,
+            user_message="产品介绍",
+            conversation_history=[],
+            scenario="general",
+        )
+        return True
+    except Exception as e:
+        print(f"[warmup] knowledge retrieval failed (non-fatal): {e}")
+        return False
 
 
 async def parallel_context_assembly(
@@ -408,6 +442,7 @@ async def stream_pipeline(
     handler,
     persona: Optional[Dict] = None,
     user_context: Optional[Dict] = None,
+    latency_clock: Callable[[], float] = time.perf_counter,
 ) -> Dict[str, Any]:
     """
     主入口：执行一次完整的"用户消息 → 流式 AI 回复"流程。
@@ -427,6 +462,7 @@ async def stream_pipeline(
     from app.websocket.manager import session_manager
     from app.services.conversation.handler import add_breath_tags_to_response
 
+    request_started = latency_clock()
     session_info = session_manager.get_session_info(session_id) or {}
     role_config = session_info.get("role_config", {})
     customer_type_map = {
@@ -471,54 +507,82 @@ async def stream_pipeline(
     last_streamed_text = ""
     sentences_emitted: List[str] = []
     audio_chunks_emitted: List[bytes] = []
-    tts_tasks: List[asyncio.Task] = []
+    first_audio_ms: Optional[int] = None
+    first_audio_target_met: Optional[bool] = None
     t0 = time.time()
-    stop_event = asyncio.Event()  # 通知 monitor 退出
-    monitor_task: Optional[asyncio.Task] = None
+    tts_queue = asyncio.Queue()
+    first_tts_segment = True
+
+    async def push_audio_chunk(chunk: bytes):
+        """保存并立即推送一个 TTS 音频块，确保每块只发送一次。"""
+        nonlocal first_audio_ms, first_audio_target_met
+        if not chunk:
+            return
+        audio = bytes(chunk)
+        audio_chunks_emitted.append(audio)
+        if websocket_send_binary:
+            await websocket_send_binary(audio)
+            if first_audio_ms is None:
+                first_audio_ms = int(round((latency_clock() - request_started) * 1000))
+                first_audio_target_met = first_audio_ms < 3000
+                status = "PASS" if first_audio_target_met else "MISS"
+                print(
+                    f"[LATENCY] first_audio={first_audio_ms}ms "
+                    f"target<3000ms {status}"
+                )
+            print(
+                f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] "
+                f"pushed audio chunk ({len(audio)} bytes)"
+            )
+
+    async def tts_worker():
+        """串行消费句子，保持语音顺序，同时与 LLM 生成并行。"""
+        while True:
+            sentence = await tts_queue.get()
+            try:
+                if sentence is None:
+                    return
+                await sentence_to_audio_stream(
+                    sentence,
+                    minimax,
+                    emotion,
+                    voice_modify,
+                    on_chunk=push_audio_chunk,
+                )
+            finally:
+                tts_queue.task_done()
+
+    async def enqueue_sentence(sentence: str):
+        """记录可见句子，并把带语气标签的版本交给 TTS。"""
+        nonlocal first_tts_segment
+        sentence = re.sub(r'\n+', '，', sentence).strip()
+        if not sentence:
+            return
+        sentence = clean_reasoning_dump(sentence)
+        if not sentence or looks_like_reasoning_dump(sentence):
+            return
+        sentences_emitted.append(sentence)
+        speech_text = sentence
+        if first_tts_segment and breath_tag:
+            tag = " ".join(breath_tag) if isinstance(breath_tag, list) else str(breath_tag)
+            speech_text = f"{tag} {sentence}"
+        first_tts_segment = False
+        print(
+            f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] "
+            f"sentence ready: {sentence[:60]!r} → queue TTS"
+        )
+        await tts_queue.put(speech_text)
+
+    tts_worker_task = asyncio.create_task(tts_worker())
     try:
         token_count = 0
         first_token_at = None
-        # 关键优化：边收 LLM token 边推送 TTS 完成的 audio chunk
-        async def monitor_tts():
-            """在 LLM 还在生成时，实时把已完成的 TTS 推给前端"""
-            while not stop_event.is_set():
-                if not tts_tasks:
-                    # 没任务了，等 LLM 完或 stop
-                    if not llm_streaming:
-                        break
-                    await asyncio.sleep(0.05)
-                    continue
-                # 等任何一个 TTS 任务完成
-                done, pending = await asyncio.wait(
-                    tts_tasks, return_when=asyncio.FIRST_COMPLETED, timeout=0.1
-                )
-                for d in done:
-                    # 防御性：d 可能已被 main task remove（比如 gather 完成时），
-                    # 用 if 保护避免 ValueError
-                    if d in tts_tasks:
-                        tts_tasks.remove(d)
-                    try:
-                        r = d.result()
-                        if r and isinstance(r, (bytes, bytearray)) and len(r) > 0:
-                            audio_chunks_emitted.append(bytes(r))
-                            if websocket_send_binary:
-                                try:
-                                    await websocket_send_binary(bytes(r))
-                                    print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] pushed audio chunk ({len(r)} bytes)")
-                                except Exception as e:
-                                    print(f"[STREAM] send_binary error: {e}")
-                    except Exception as e:
-                        print(f"[STREAM] TTS task error: {e}")
-            print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] monitor exit, total audio chunks pushed: {len(audio_chunks_emitted)}")
-
-        # 起 monitor（和 LLM 流并行）
-        monitor_task = asyncio.create_task(monitor_tts())
-
-        # 用 M2.7-highspeed（保持全部功能：persona/user_context/history/RAG/emotion 全在）
-        llm_streaming = True
         print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] → calling chat_stream (model=M3 + thinking disabled, TTFT 2.6s 实测)")
-        # 改用 M3 + thinking disabled — 实测 TTFT 2.6s（之前 M2.7-highspeed 6-10s）
-        async for token in minimax.chat_stream(messages, model="MiniMax-M3"):
+        async for token in minimax.chat_stream(
+            messages,
+            model="MiniMax-M3",
+            max_tokens=256,
+        ):
             now_ms = int((time.time() - t0) * 1000)
             token_count += 1
             if first_token_at is None:
@@ -528,11 +592,15 @@ async def stream_pipeline(
                 print(f"[STREAM][T={now_ms:>5}ms] token #{token_count}: {token[:30]!r}")
             # 后处理 token
             full_text += token
-            # 累积到 buf（不切句，等 LLM 完再切）
-            buf.push(token)
+            ready_sentences = buf.push(token)
+            for sentence in ready_sentences:
+                await enqueue_sentence(sentence)
+            if ready_sentences:
+                # 给 TTS worker 一次调度机会，让语音在 LLM 继续生成前启动。
+                await asyncio.sleep(0)
             # 首个可见 token 立刻发送以降低 TTFT；之后合并小片段或等标点，
             # 让前端拿到的是可直接覆盖展示的累计文本。
-            visible = buf.text
+            visible = "".join(sentences_emitted) + buf.text
             token_ends_at_boundary = bool(token.rstrip()) and token.rstrip()[-1] in _STREAM_UPDATE_BOUNDARIES
             if visible.strip() and visible != last_streamed_text and (
                 not last_streamed_text
@@ -546,69 +614,41 @@ async def stream_pipeline(
                     "timestamp": time.time(),
                 })
                 last_streamed_text = visible
-        llm_streaming = False
         if token_count == 0:
             raise RuntimeError("LLM returned no content")
         end_ms = int((time.time() - t0) * 1000)
         print(f"[STREAM][T={end_ms:>5}ms] ← LLM stream ended, total {token_count} tokens, first_token_at={first_token_at}ms, last_token_at={end_ms}ms")
-        # 4. LLM 结束：flush buf 拿到完整内容（不切句，1 句完整 TTS）
+        # 4. LLM 结束：只把尚未闭合的尾句送入 TTS。
         tail = buf.flush()
-        full_sentence = tail.strip() if tail else ""
-        # 去掉 MiniMax 输出里多余的 \n（多个连续换行）— 不影响语义但 TTS 不会读
-        import re as _re
-        full_sentence = _re.sub(r'\n+', '，', full_sentence).strip() if full_sentence else ""
-        if full_sentence:
-            full_sentence = clean_reasoning_dump(full_sentence)
-        if full_sentence and not looks_like_reasoning_dump(full_sentence):
-            # 把 breath_tag 插到开头
-            if breath_tag:
-                tag = " ".join(breath_tag) if isinstance(breath_tag, list) else str(breath_tag)
-                full_sentence = f"{tag} {full_sentence}"
-            sentences_emitted.append(full_sentence)
-            print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] ✂ final sentence: {full_sentence[:60]!r} → fire TTS")
-            # 结尾可能补了 TTS 标签或尚未达到推送阈值，此时补一次最终文本。
-            if full_sentence != last_streamed_text:
-                await websocket_send({
-                    "type": "ai_streaming_update",
-                    "id": msg_id,
-                    "content": full_sentence,
-                    "timestamp": time.time(),
-                })
-                last_streamed_text = full_sentence
-            tts_tasks.append(asyncio.create_task(
-                sentence_to_audio_stream(
-                    full_sentence, minimax, emotion, voice_modify,
-                    on_chunk=websocket_send_binary,
-                )
-            ))
-        else:
-            print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] final sentence empty or reasoning-dump, skip")
-        # 关键：让 monitor 自己跑完所有 TTS 后再退出，main 等待 monitor 完成
-        # 而不是 cancel monitor —— 否则 monitor 还在 await send_binary 时被中断
-        # 导致 audio chunk 丢失。
-        if tts_tasks:
-            print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] waiting for {len(tts_tasks)} TTS tasks to finish")
-            await asyncio.gather(*tts_tasks, return_exceptions=True)
-            print(f"[STREAM][T={int((time.time()-t0)*1000):>5}ms] all TTS task objects done")
-        # 通知 monitor 退出（不 cancel），等它自己跑完
-        stop_event.set()
-        try:
-            await monitor_task
-        except asyncio.CancelledError:
-            pass
+        if tail:
+            await enqueue_sentence(tail)
+
+        final_visible = "".join(sentences_emitted)
+        if final_visible and final_visible != last_streamed_text:
+            await websocket_send({
+                "type": "ai_streaming_update",
+                "id": msg_id,
+                "content": final_visible,
+                "timestamp": time.time(),
+            })
+            last_streamed_text = final_visible
+
+        await tts_queue.join()
+        await tts_queue.put(None)
+        await tts_worker_task
     except Exception as e:
         print(f"[STREAM] LLM error: {e}")
         import traceback
         traceback.print_exc()
-        llm_streaming = False
-        stop_event.set()
-        if monitor_task is not None:
-            await monitor_task
-        error_message = (
-            "MiniMax 账户额度不足，暂时无法生成回复。请检查账户余额或套餐额度。"
-            if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 402
-            else "AI 服务暂时无法生成回复，请稍后重试。"
-        )
+        if not tts_worker_task.done():
+            tts_worker_task.cancel()
+            await asyncio.gather(tts_worker_task, return_exceptions=True)
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 402:
+            error_message = "MiniMax 账户额度不足，暂时无法生成回复。请检查账户余额或套餐额度。"
+        elif isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+            error_message = "MiniMax 返回 429，当前额度或请求频率受限。请检查 Token Plan 额度后重试。"
+        else:
+            error_message = "AI 服务暂时无法生成回复，请稍后重试。"
         await websocket_send({
             "type": "ai_streaming_end",
             "id": msg_id,
@@ -623,7 +663,14 @@ async def stream_pipeline(
             "emotion": emotion,
             "voice_modify": voice_modify,
             "knowledge_refs": knowledge_refs,
+            "first_audio_ms": first_audio_ms,
+            "first_audio_target_met": first_audio_target_met,
         }
+    finally:
+        # 客户端断开会以 CancelledError 中断协程；确保后台 TTS worker 不泄漏。
+        if not tts_worker_task.done():
+            tts_worker_task.cancel()
+            await asyncio.gather(tts_worker_task, return_exceptions=True)
 
     elapsed_ms = (time.time() - t0) * 1000
     print(f"[STREAM] LLM+sentences in {elapsed_ms:.0f}ms, "
@@ -635,13 +682,16 @@ async def stream_pipeline(
     if not clean:
         clean = "".join(sentences_emitted)
 
-    # 6. 为整段合成一个 mp3（给回放用）
+    # 6. 流式 TTS 已成功时直接复用音频，避免再调用一次 HTTP TTS。
+    # WebSocket TTS 没有产出音频时才用 HTTP 接口兜底。
     full_audio_b64 = ""
-    if clean:
+    if audio_chunks_emitted:
+        full_audio_b64 = base64.b64encode(b"".join(audio_chunks_emitted)).decode()
+    elif clean:
         try:
             full_audio = await minimax.text_to_speech(
                 text=clean,
-                model="speech-2.8-hd",
+                model="speech-2.8-turbo",
                 voice="male-qn-qingse",
                 speed=1.0,
                 format="mp3",
@@ -669,4 +719,6 @@ async def stream_pipeline(
         "emotion": emotion,
         "voice_modify": voice_modify,
         "knowledge_refs": knowledge_refs,
+        "first_audio_ms": first_audio_ms,
+        "first_audio_target_met": first_audio_target_met,
     }

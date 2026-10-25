@@ -19,7 +19,8 @@ export interface KnowledgeRef {
 export interface StreamMessage {
   type: 'user_message' | 'user_message_ack' | 'ai_message' | 'ai_message_audio' | 'ai_streaming_start' | 'ai_streaming_update' |
         'ai_streaming_end' | 'audio_chunk' | 'backchannel' | 'status_update' |
-        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'system'
+        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'system' |
+        'voice_output_start' | 'voice_output_end' | 'voice_timeout' | 'ai_text_delta'
   id?: string
   content?: string
   audio_data?: string
@@ -29,6 +30,7 @@ export interface StreamMessage {
   state?: ConversationState
   timestamp: string
   data?: Record<string, unknown>
+  sample_rate?: number
 }
 
 interface UseWebSocketOptions {
@@ -44,11 +46,12 @@ interface UseWebSocketOptions {
 interface UseWebSocketReturn {
   isConnected: boolean
   isConnecting: boolean
-  sendMessage: (message: string, audioData?: string, id?: string, audioMime?: string) => void
+  sendMessage: (message: string, audioData?: string, id?: string, audioMime?: string, voiceOnly?: boolean) => void
   sendAudioChunk: (chunk: Uint8Array) => void
   sendStopPlayback: () => void
   sendVoiceStart: () => void
   sendVoiceEnd: () => void
+  sendVoiceCancel: () => void
   disconnect: () => void
   lastMessage: StreamMessage | null
   lastAudioChunk: Uint8Array | null
@@ -152,7 +155,7 @@ export const useWebSocket = ({
     connectingRef.current = false
   }, [])
 
-  const sendMessage = useCallback((message: string, audioData?: string, id?: string, audioMime?: string) => {
+  const sendMessage = useCallback((message: string, audioData?: string, id?: string, audioMime?: string, voiceOnly?: boolean) => {
     const ws = wsRef.current
     if (!ws) {
       console.warn('[WS] sendMessage: no ws ref')
@@ -166,6 +169,7 @@ export const useWebSocket = ({
         content: message,
         audio_data: audioData,
         audio_mime: audioMime,
+        voice_only: voiceOnly === true,
         timestamp: new Date().toISOString()
       }))
       console.log('[WS] sent user_message:', message.slice(0, 30))
@@ -198,6 +202,12 @@ export const useWebSocket = ({
     }
   }, [])
 
+  const sendVoiceCancel = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'voice_cancel' }))
+    }
+  }, [])
+
   useEffect(() => {
     if (!url) return
     // Guard: skip if already connecting or connected
@@ -220,6 +230,7 @@ export const useWebSocket = ({
     sendStopPlayback,
     sendVoiceStart,
     sendVoiceEnd,
+    sendVoiceCancel,
     disconnect,
     lastMessage,
     lastAudioChunk,

@@ -118,17 +118,36 @@ async def lifespan(app: FastAPI):
     )
     scheduler.start()
     logger.info("[scheduler] APScheduler started: daily_brief_push @ 08:30 Asia/Shanghai")
-    # 预热 BGE 嵌入模型：第一次 RAG 检索会触发 60s+ 懒加载，挪到启动时。
-    # 同步跑（不需要等），放后台 task 即可。
+    # 在应用开始接收请求前完成知识链路预热，避免第一次对话承担模型、
+    # ChromaDB 和知识数据的懒加载成本。失败不影响服务启动。
     async def _warmup_embedding():
         try:
             from app.services.knowledge.embedding import get_embedding_model
             embedder = get_embedding_model()
-            embedder.embed_query("warmup")
+            await asyncio.to_thread(embedder.embed_query, "warmup")
             logger.info("[warmup] BGE embedding model ready")
         except Exception as e:
             logger.warning(f"[warmup] BGE warmup failed (will lazy-load on first request): {e}")
-    asyncio.create_task(_warmup_embedding())
+
+        try:
+            from app.services.conversation.handler import get_conversation_handler
+            from app.services.conversation.streaming import warmup_knowledge_retrieval
+
+            handler = get_conversation_handler()
+            ready = await asyncio.wait_for(
+                warmup_knowledge_retrieval(handler),
+                timeout=15.0,
+            )
+            if ready:
+                logger.info("[warmup] knowledge retrieval ready")
+            else:
+                logger.warning("[warmup] knowledge retrieval unavailable; first request may be slower")
+        except asyncio.TimeoutError:
+            logger.warning("[warmup] knowledge retrieval timed out after 15s; continuing startup")
+        except Exception as e:
+            logger.warning(f"[warmup] knowledge retrieval skipped: {e}")
+
+    await _warmup_embedding()
 
     # 预热 whisper 模型：ASR 首次请求触发 2-3s 模型加载，挪到启动时。
     async def _warmup_whisper():
@@ -388,7 +407,9 @@ async def generate_opening_message(scenario_name: str, scenario_id: str,
 async def process_user_message(websocket, session_id: str, content: str,
                               audio_data: str = None,
                               audio_mime: str = None,
-                              client_id: str = None) -> None:
+                              client_id: str = None,
+                              voice_only: bool = False,
+                              voice_ready: Optional[asyncio.Event] = None) -> None:
     """Process a user message: ASR (optional) → LLM (with persona) → TTS → send.
 
     Args:
@@ -397,8 +418,14 @@ async def process_user_message(websocket, session_id: str, content: str,
         client_id: Optional id of the local user message, so the frontend can
             match the ASR ack to its placeholder bubble.
     """
+    if voice_only and voice_ready is not None:
+        try:
+            await asyncio.wait_for(voice_ready.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pass
     minimax = get_minimax_service()
-    await safe_send_status(session_id, ConversationState.PROCESSING)
+    if not voice_only:
+        await safe_send_status(session_id, ConversationState.PROCESSING)
 
     # ASR: transcribe audio if provided.
     # Strategy (in order of accuracy):
@@ -464,6 +491,11 @@ async def process_user_message(websocket, session_id: str, content: str,
 
     session_manager.add_message(session_id, "user", user_text)
     save_message_to_db(session_id, "user", user_text)
+
+    # The realtime voice task owns the AI reply for this turn. Keep the
+    # transcript without starting a second ASR→LLM→TTS reply.
+    if voice_only:
+        return
 
     if not minimax.api_key:
         await _send_mock_response(session_id, "抱歉，我现在无法回答。请确保API密钥已正确配置。")
@@ -866,6 +898,19 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     pcm_queue: asyncio.Queue = asyncio.Queue()  # 推 PCM chunks 给 Realtime
     realtime_task: Optional[asyncio.Task] = None
     voice_active: bool = False
+    first_voice_audio = asyncio.Event()
+
+    async def _voice_response_deadline(task: asyncio.Task, audio_event: asyncio.Event):
+        """Stop a silent provider turn before the UI waits indefinitely."""
+        try:
+            await asyncio.wait_for(audio_event.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            if not task.done():
+                task.cancel()
+            await safe_send_message(session_id, {
+                "type": "voice_timeout",
+                "content": "语音回复超时，请重试或改用文字输入。",
+            })
 
     async def _ffmpeg_to_pcm(webm_bytes: bytes, mime: str) -> Optional[bytes]:
         """webm/wav → 24kHz mono s16le PCM"""
@@ -951,9 +996,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     stream_lock = asyncio.Lock()
     realtime_task: Optional[asyncio.Task] = None
     voice_active: bool = False
-    # 优化：累积到 16KB audio 才 ffmpeg 转码一次（避免启动开销）
-    # 16KB webm/opus ≈ 1-2s 音频（取决于编码），转码后 ≈ 48KB 24kHz PCM
-    _FFMPEG_BATCH_BYTES = 4000  # 4KB ≈ 0.25-0.5s 音频（短句也能转码）
+    from app.websocket.voice_turn import finish_voice_input
 
     async def _ffmpeg_to_pcm(audio_bytes: bytes, mime: str) -> Optional[bytes]:
         """webm/wav → 24kHz mono s16le PCM"""
@@ -978,7 +1021,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             print(f"[Realtime] ffmpeg error: {e}")
             return None
 
-    async def _realtime_voice_chat_runner():
+    async def _realtime_voice_chat_runner(audio_event: asyncio.Event):
         from app.services.llm.minimax import get_minimax_service
         svc = get_minimax_service()
         try:
@@ -998,7 +1041,14 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 except Exception: pass
             async def on_audio_delta(audio_bytes):
                 try:
+                    if not audio_event.is_set():
+                        await safe_send_message(session_id, {
+                            'type': 'voice_output_start',
+                            'format': 'pcm16',
+                            'sample_rate': 24000,
+                        })
                     await manager.send_audio_chunk(session_id, audio_bytes)
+                    audio_event.set()
                 except Exception: pass
             print(f"[Realtime] starting voice chat...")
             final_text = await svc.realtime_voice_chat(
@@ -1007,12 +1057,18 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 system_instruction='你扮演客户李总，45岁制造业总经理。简短的回复1-2句话。',
             )
             print(f"[Realtime] done, final: {final_text!r}")
+            if not audio_event.is_set():
+                await safe_send_message(session_id, {
+                    'type': 'voice_timeout',
+                    'content': '没有收到语音回复，请重试。',
+                })
             try:
                 await safe_send_message(session_id, {
                     'type': 'ai_streaming_end',
                     'content': final_text,
                     'timestamp': time.time(),
                 })
+                await safe_send_message(session_id, {'type': 'voice_output_end'})
             except Exception: pass
         except Exception as e:
             print(f"[Realtime] error: {e}")
@@ -1031,22 +1087,13 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             if raw.get("type") != "websocket.receive":
                 continue
 
-            # Binary 帧 = audio chunk → 累积 + 批量转码 + 推 Realtime
-            # 优化：累积到 _FFMPEG_BATCH_BYTES 才转码一次（避免 53 个 ffmpeg 启动开销）
+            # MediaRecorder WebM chunks share a container header. Decode the
+            # complete recording once at voice_end rather than launching
+            # ffmpeg for headerless fragments throughout the turn.
             if "bytes" in raw and raw["bytes"]:
                 audio_bytes = bytes(raw["bytes"])
-                async with stream_lock:
+                if voice_active:
                     stream_buffer.append(audio_bytes)
-                    cur_size = sum(len(c) for c in stream_buffer)
-                if voice_active and cur_size >= _FFMPEG_BATCH_BYTES:
-                    # 批量转码：取累积的所有 audio
-                    async with stream_lock:
-                        batch = b"".join(stream_buffer)
-                        stream_buffer.clear()
-                    mime = stream_mime
-                    pcm = await _ffmpeg_to_pcm(batch, mime)
-                    if pcm:
-                        await pcm_queue.put(pcm)
                 continue
 
             # Text 帧 = JSON 命令
@@ -1063,7 +1110,9 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                     data.get("content", ""),
                     data.get("audio_data", ""),
                     data.get("audio_mime", "audio/webm"),
-                    data.get("id")
+                    data.get("id"),
+                    data.get("voice_only") is True,
+                    first_voice_audio if data.get("voice_only") is True else None,
                 ))
             elif msg_type == "stop_playback":
                 await safe_send_status(session_id, ConversationState.IDLE)
@@ -1074,6 +1123,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                     stream_mime = data.get("audio_mime", "audio/webm")
                     stream_client_id = data.get("id")
                 voice_active = True
+                first_voice_audio = asyncio.Event()
                 # 清空 pcm_queue
                 while not pcm_queue.empty():
                     try: pcm_queue.get_nowait()
@@ -1082,23 +1132,37 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 # 启动 Realtime voice chat task
                 if realtime_task and not realtime_task.done():
                     realtime_task.cancel()
-                realtime_task = asyncio.create_task(_realtime_voice_chat_runner())
+                realtime_task = asyncio.create_task(_realtime_voice_chat_runner(first_voice_audio))
             elif msg_type == "voice_end":
                 voice_active = False
                 await safe_send_status(session_id, ConversationState.IDLE)
-                # 推 None 终止信号
-                await pcm_queue.put(None)
-                # 推累积的 audio（防止最后一段没推）
+                # The final ondataavailable chunk was sent before voice_end.
                 async with stream_lock:
-                    if stream_buffer:
-                        all_audio = b"".join(stream_buffer)
-                        stream_buffer.clear()
-                pcm = await _ffmpeg_to_pcm(all_audio, stream_mime) if stream_buffer or all_audio else None
-                if pcm: await pcm_queue.put(pcm)
-                # 等 realtime_task 完（最多 30s）
+                    final_chunks = stream_buffer[:]
+                    stream_buffer.clear()
+                try:
+                    await asyncio.wait_for(
+                        finish_voice_input(pcm_queue, final_chunks, stream_mime, _ffmpeg_to_pcm),
+                        timeout=1.5,
+                    )
+                except asyncio.TimeoutError:
+                    if realtime_task and not realtime_task.done():
+                        realtime_task.cancel()
+                    await safe_send_message(session_id, {
+                        "type": "voice_timeout",
+                        "content": "语音转码超时，请重试。",
+                    })
+                    continue
+                # Leave the receive loop free for the transcript and next
+                # control message while the provider finishes its response.
                 if realtime_task and not realtime_task.done():
-                    try: await asyncio.wait_for(realtime_task, timeout=30)
-                    except: pass
+                    asyncio.create_task(_voice_response_deadline(realtime_task, first_voice_audio))
+            elif msg_type == "voice_cancel":
+                voice_active = False
+                first_voice_audio.set()
+                stream_buffer.clear()
+                if realtime_task and not realtime_task.done():
+                    realtime_task.cancel()
                 if session_manager.should_insert_backchannel(session_id):
                     bt = backchannel_manager.generate_backchannel_text()
                     await safe_send_message(session_id, {'type': 'backchannel', 'content': bt})

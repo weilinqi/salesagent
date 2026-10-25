@@ -60,11 +60,17 @@ const PracticeChatPage = () => {
 
   // Track current AI message ID for audio chunk accumulation
   const currentAIMessageIdRef = useRef<string | null>(null)
+  const voicePcmRef = useRef(false)
+  const firstVoiceChunkRef = useRef(false)
+  const dropVoiceAudioRef = useRef(false)
+  const voiceWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const awaitingVoiceRef = useRef(false)
 
   // Audio streaming for TTS playback
   const {
     isPlaying: isPlayingAudio,
     playChunk,
+    playPcmChunk,
     playStoredAudio,
     stop: stopAudio,
   } = useAudioStream()
@@ -108,6 +114,35 @@ const PracticeChatPage = () => {
 
   const handleMessage = useCallback((wsMessage: StreamMessage) => {
     // Handle different message types from WebSocket
+    if (wsMessage.type === 'voice_output_start') {
+      if (dropVoiceAudioRef.current) return
+      voicePcmRef.current = true
+      firstVoiceChunkRef.current = true
+      awaitingVoiceRef.current = false
+      if (voiceWaitTimerRef.current) clearTimeout(voiceWaitTimerRef.current)
+      voiceWaitTimerRef.current = null
+      return
+    }
+    if (wsMessage.type === 'voice_output_end') {
+      voicePcmRef.current = false
+      return
+    }
+    if (wsMessage.type === 'voice_timeout') {
+      voicePcmRef.current = false
+      if (awaitingVoiceRef.current) {
+        awaitingVoiceRef.current = false
+        dropVoiceAudioRef.current = true
+        if (voiceWaitTimerRef.current) clearTimeout(voiceWaitTimerRef.current)
+        voiceWaitTimerRef.current = null
+        setMessages_(prev => [...prev, {
+          id: `voice-timeout-${Date.now()}`,
+          type: 'system',
+          content: wsMessage.content || '语音回复超时，请重试或改用文字输入。',
+          timestamp: new Date().toISOString(),
+        }])
+      }
+      return
+    }
     if (wsMessage.type === 'user_message') {
       // User's own message - already added locally
       return
@@ -256,6 +291,12 @@ const PracticeChatPage = () => {
     }
   }, [playStoredAudio, updatePersona])
 
+  const handleVoiceAudio = useCallback((chunk: Uint8Array) => {
+    if (dropVoiceAudioRef.current) return
+    if (voicePcmRef.current) playPcmChunk(chunk, 24000)
+    else playChunk(chunk)
+  }, [playChunk, playPcmChunk])
+
   const handleConnected = useCallback(() => {
     console.log('WebSocket connected')
   }, [])
@@ -264,15 +305,52 @@ const PracticeChatPage = () => {
     console.log('WebSocket disconnected')
   }, [])
 
-  const { isConnected, sendMessage: wsSendMessage, sendStopPlayback, sendVoiceStart, sendVoiceEnd, sendAudioChunk } = useWebSocket({
+  const { isConnected, sendMessage: wsSendMessage, sendStopPlayback, sendVoiceStart, sendVoiceEnd, sendVoiceCancel, sendAudioChunk } = useWebSocket({
     url: wsUrl,
     onMessage: handleMessage,
-    onAudioChunk: playChunk,
+    onAudioChunk: handleVoiceAudio,
     onConnected: handleConnected,
     onDisconnected: handleDisconnected
   })
 
-  const handleSendMessage = useCallback((content: string, audioData?: string) => {
+  const handleVoiceStart = useCallback(() => {
+    if (voiceWaitTimerRef.current) clearTimeout(voiceWaitTimerRef.current)
+    voiceWaitTimerRef.current = null
+    awaitingVoiceRef.current = false
+    firstVoiceChunkRef.current = false
+    dropVoiceAudioRef.current = false
+    voicePcmRef.current = false
+    sendVoiceStart()
+  }, [sendVoiceStart])
+
+  const handleVoiceEnd = useCallback(() => {
+    if (firstVoiceChunkRef.current) {
+      sendVoiceEnd()
+      return
+    }
+    awaitingVoiceRef.current = true
+    sendVoiceEnd()
+    if (voiceWaitTimerRef.current) clearTimeout(voiceWaitTimerRef.current)
+    voiceWaitTimerRef.current = setTimeout(() => {
+      if (!awaitingVoiceRef.current) return
+      awaitingVoiceRef.current = false
+      voicePcmRef.current = false
+      dropVoiceAudioRef.current = true
+      sendVoiceCancel()
+      setMessages_(prev => [...prev, {
+        id: `voice-timeout-${Date.now()}`,
+        type: 'system',
+        content: '语音回复超过 5 秒，请重试或改用文字输入。',
+        timestamp: new Date().toISOString(),
+      }])
+    }, 5000)
+  }, [sendVoiceEnd, sendVoiceCancel])
+
+  useEffect(() => () => {
+    if (voiceWaitTimerRef.current) clearTimeout(voiceWaitTimerRef.current)
+  }, [])
+
+  const handleSendMessage = useCallback((content: string, audioData?: string, voiceOnly?: boolean) => {
     // Add user message to local state
     const userMsg: MessageItem = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -287,7 +365,7 @@ const PracticeChatPage = () => {
     setIsSending(true)
 
     // Send via WebSocket (include id so the ASR ack can be matched back)
-    wsSendMessage(content, audioData, userMsg.id, 'audio/webm')
+    wsSendMessage(content, audioData, userMsg.id, 'audio/webm', voiceOnly)
 
     // Update message status to show sending
     setMessages_(prev => prev.map(m =>
@@ -449,8 +527,8 @@ const PracticeChatPage = () => {
                 : 'AI客户'
             }
             onSendMessage={handleSendMessage}
-            onVoiceStart={sendVoiceStart}
-            onVoiceEnd={sendVoiceEnd}
+            onVoiceStart={handleVoiceStart}
+            onVoiceEnd={handleVoiceEnd}
             onAudioChunk={sendAudioChunk}
             onStopPlayback={handleStopPlayback}
             onPlayAudio={playStoredAudio}

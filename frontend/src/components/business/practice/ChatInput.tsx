@@ -6,7 +6,7 @@ import { useState, useRef, KeyboardEvent } from 'react'
 import { useAudioRecorder } from '../../../hooks/useAudioRecorder'
 
 interface ChatInputProps {
-  onSendMessage: (message: string, audioData?: string) => void
+  onSendMessage: (message: string, audioData?: string, voiceOnly?: boolean) => void
   onVoiceStart?: () => void
   onVoiceEnd?: () => void
   /** 流式 ASR：录音时把每个分片推给后端做实时识别 */
@@ -89,7 +89,7 @@ const ChatInput = ({
       // Show duration in placeholder text so the user always sees the
       // voice message was captured, even when backend ASR fails.
       const seconds = Math.max(1, Math.round(durationMs / 1000))
-      onSendMessage(`语音消息（${seconds}秒）`, base64Audio)
+      onSendMessage(`语音消息（${seconds}秒）`, base64Audio, true)
     } catch (error) {
       console.error('Failed to stop recording:', error)
       setIsRecording(false)

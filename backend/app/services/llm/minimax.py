@@ -148,8 +148,8 @@ class MiniMaxService:
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
 
-        # 当前 websockets 库版本用 extra_headers（不是 additional_headers）
-        ws_cm = websockets.connect(url, extra_headers=headers, ssl=ssl_context)
+        # websockets 14+ renamed this argument to additional_headers.
+        ws_cm = websockets.connect(url, additional_headers=headers, ssl=ssl_context)
         async with ws_cm as ws:
             # Wait for connection confirmation
             conn_resp = json.loads(await ws.recv())
@@ -406,7 +406,7 @@ class MiniMaxService:
         try:
             async with websockets.connect(
                 url,
-                extra_headers={"Authorization": f"Bearer {self.api_key}"},
+                additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
                 max_size=10 * 1024 * 1024,
             ) as ws:
@@ -535,7 +535,7 @@ class MiniMaxService:
         try:
             async with websockets.connect(
                 url,
-                extra_headers={"Authorization": f"Bearer {self.api_key}"},
+                additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
                 max_size=10 * 1024 * 1024,
             ) as ws:
@@ -817,10 +817,10 @@ class MiniMaxService:
             # - reasoning_split 把 <think> 块搬到独立字段，content 干净
             # 实测：M3 + thinking disabled + reasoning_split = TTFT 2.6s，content 干净
             payload["reasoning_split"] = True
-            # 实测 M3 默认 thinking 就是关闭的（TTFT 2.3s）。
-            # M2.x 即使传 thinking: {type: disabled} 也关不掉（仍 7-11s），
-            # 因为文档明说 "M2.x thinking 无法关闭"。
-            # 默认 model 已是 MiniMax-M3，所以不需要传 thinking 参数。
+        # 明确关闭 M3 思考模式，避免依赖服务端默认值而增加首 token 时延。
+        # 其他模型可能不支持 disabled，因此只对 M3 发送该参数。
+        if model == "MiniMax-M3":
+            payload["thinking"] = {"type": "disabled"}
 
         if tools:
             payload["tools"] = tools
@@ -894,10 +894,8 @@ class MiniMaxService:
             # - reasoning_split 把 <think> 块搬到独立字段，content 干净
             # 实测：M3 + thinking disabled + reasoning_split = TTFT 2.6s，content 干净
             payload["reasoning_split"] = True
-            # 实测 M3 默认 thinking 就是关闭的（TTFT 2.3s）。
-            # M2.x 即使传 thinking: {type: disabled} 也关不掉（仍 7-11s），
-            # 因为文档明说 "M2.x thinking 无法关闭"。
-            # 默认 model 已是 MiniMax-M3，所以不需要传 thinking 参数。
+        if model == "MiniMax-M3":
+            payload["thinking"] = {"type": "disabled"}
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             async with client.stream(
@@ -1140,18 +1138,11 @@ class MiniMaxService:
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
 
-        try:
-            ws_cm = websockets.connect(
-                'wss://api.minimaxi.com/ws/v1/realtime',
-                extra_headers={'Authorization': f'Bearer {self.api_key}'},
-                ssl=ssl_ctx,
-            )
-        except TypeError:
-            ws_cm = websockets.connect(
-                'wss://api.minimaxi.com/ws/v1/realtime',
-                additional_headers={'Authorization': f'Bearer {self.api_key}'},
-                ssl=ssl_ctx,
-            )
+        ws_cm = websockets.connect(
+            'wss://api.minimaxi.com/ws/v1/realtime',
+            additional_headers={'Authorization': f'Bearer {self.api_key}'},
+            ssl=ssl_ctx,
+        )
 
         full_text = ""
         async with ws_cm as ws:
