@@ -4,6 +4,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createWebSocketConnection } from './webSocketConnection'
+import type { CustomerPersona } from '../stores/practiceStore'
 
 export type ConversationState = 'idle' | 'user_speaking' | 'ai_speaking' | 'processing'
 
@@ -19,14 +20,18 @@ export interface KnowledgeRef {
 export interface StreamMessage {
   type: 'user_message' | 'user_message_ack' | 'ai_message' | 'ai_message_audio' | 'ai_streaming_start' | 'ai_streaming_update' |
         'ai_streaming_end' | 'audio_chunk' | 'backchannel' | 'status_update' |
-        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'system'
+        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'system' |
+        'voice_output_start' | 'voice_output_end' | 'voice_timeout' | 'ai_text_delta'
   id?: string
   content?: string
   audio_data?: string
+  asr_text?: string
+  persona?: CustomerPersona
   knowledge_refs?: KnowledgeRef[]
   state?: ConversationState
   timestamp: string
   data?: Record<string, unknown>
+  sample_rate?: number
 }
 
 interface UseWebSocketOptions {
@@ -42,11 +47,12 @@ interface UseWebSocketOptions {
 interface UseWebSocketReturn {
   isConnected: boolean
   isConnecting: boolean
-  sendMessage: (message: string, audioData?: string, id?: string, audioMime?: string) => void
+  sendMessage: (message: string, audioData?: string, id?: string, audioMime?: string, voiceOnly?: boolean) => void
   sendAudioChunk: (chunk: Uint8Array) => void
   sendStopPlayback: () => void
   sendVoiceStart: () => void
   sendVoiceEnd: () => void
+  sendVoiceCancel: () => void
   disconnect: () => void
   lastMessage: StreamMessage | null
   lastAudioChunk: Uint8Array | null
@@ -71,6 +77,10 @@ export const useWebSocket = ({
   const connectionRef = useRef<ReturnType<typeof createWebSocketConnection> | null>(null)
   const callbacksRef = useRef({ onMessage, onAudioChunk, onStateChange, onConnected, onDisconnected, onError })
   callbacksRef.current = { onMessage, onAudioChunk, onStateChange, onConnected, onDisconnected, onError }
+
+  const sendVoiceCancel = useCallback(() => {
+    connectionRef.current?.send(JSON.stringify({ type: 'voice_cancel' }))
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -123,10 +133,10 @@ export const useWebSocket = ({
   }, [url])
 
   const disconnect = useCallback(() => { connectionRef.current?.disconnect() }, [])
-  const sendMessage = useCallback((message: string, audioData?: string, id?: string, audioMime?: string) => {
+  const sendMessage = useCallback((message: string, audioData?: string, id?: string, audioMime?: string, voiceOnly?: boolean) => {
     connectionRef.current?.send(JSON.stringify({
       type: 'user_message', id, content: message, audio_data: audioData,
-      audio_mime: audioMime, timestamp: new Date().toISOString(),
+      audio_mime: audioMime, voice_only: voiceOnly === true, timestamp: new Date().toISOString(),
     }))
   }, [])
   const sendAudioChunk = useCallback((chunk: Uint8Array) => { connectionRef.current?.send(chunk) }, [])
@@ -141,6 +151,7 @@ export const useWebSocket = ({
     sendStopPlayback,
     sendVoiceStart,
     sendVoiceEnd,
+    sendVoiceCancel,
     disconnect,
     lastMessage,
     lastAudioChunk,

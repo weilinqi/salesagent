@@ -11,7 +11,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { usePracticeStore } from '../../stores/practiceStore'
 import { useSpinStore } from '../../stores/spinStore'
 import { useAuth } from '../../contexts/AuthContext'
-import { RoleConfig } from '../../api/practice'
+import { PracticeSessionContext, RoleConfig } from '../../api/practice'
 import ScenarioCard from '../../components/business/practice/ScenarioCard'
 import RoleSelector from '../../components/business/practice/RoleSelector'
 import PrePracticeForm, { UserContext } from '../../components/business/practice/PrePracticeForm'
@@ -50,7 +50,7 @@ const PracticePage = () => {
     if (selectedScenario && currentStep === 'select') {
       setCurrentStep('configure')
     }
-  }, [selectedScenario])
+  }, [selectedScenario, currentStep])
 
   // Navigate to chat page when session is ready
   useEffect(() => {
@@ -67,24 +67,16 @@ const PracticePage = () => {
     setRoleConfig(config)
   }
 
-  const handleStartPractice = async () => {
-    if (!selectedScenario || !selectedRoleConfig) return
-
-    // 必须先填销售员档案（userContext）
-    if (!userContext) {
-      setShowUserContextForm(true)
-      return
-    }
-
+  const startPractice = async (context: UserContext) => {
     setIsStarting(true)
     setStartError(null)
 
     try {
-      const spinState = location.state as { customerContext?: any; investigationResult?: any } | null
-      const customerContext = spinState?.customerContext || spinStore.customerContext
-      const investigationResult = spinState?.investigationResult || spinStore.investigationResult
+      const spinState = location.state as PracticeSessionContext | null
+      const customerContext = spinState?.customerContext ?? spinStore.customerContext ?? undefined
+      const investigationResult = spinState?.investigationResult ?? spinStore.investigationResult ?? undefined
 
-      await startSession({ customerContext, investigationResult, userContext })
+      await startSession({ customerContext, investigationResult, userContext: context })
       setCurrentStep('ready')
     } catch (error) {
       setStartError(error instanceof Error ? error.message : '启动对练失败')
@@ -93,11 +85,19 @@ const PracticePage = () => {
     }
   }
 
+  const handleStartPractice = () => {
+    if (!selectedScenario || !selectedRoleConfig) return
+    if (!userContext) {
+      setShowUserContextForm(true)
+      return
+    }
+    void startPractice(userContext)
+  }
+
   const handleUserContextSubmit = (ctx: UserContext) => {
     setUserContext(ctx)
     setShowUserContextForm(false)
-    // 立即触发开始
-    setTimeout(() => handleStartPractice(), 50)
+    void startPractice(ctx)
   }
 
   const handleReset = () => {

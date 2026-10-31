@@ -38,6 +38,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const audioElementRef = useRef<HTMLAudioElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recordingStartRef = useRef<number | null>(null)
+  const pendingChunkSendRef = useRef<Promise<void>>(Promise.resolve())
 
   const { isVoiceDetected, startVAD, stopVAD: stopVADDetection, setOptions: setVADOptions } = useVAD()
 
@@ -83,19 +84,20 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         mimeType: 'audio/webm;codecs=opus'
       })
       audioChunksRef.current = []
+      pendingChunkSendRef.current = Promise.resolve()
 
-      mediaRecorderRef.current.ondataavailable = async (event) => {
+      mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
           // 流式推送：把每个分片立刻转成 Uint8Array 通过 onChunk 回调
           // （由调用方负责通过 WebSocket 二进制帧推到后端，让后端做实时 ASR）
           if (onChunk) {
-            try {
+            pendingChunkSendRef.current = pendingChunkSendRef.current.then(async () => {
               const buf = await event.data.arrayBuffer()
               onChunk(new Uint8Array(buf))
-            } catch (e) {
+            }).catch(e => {
               console.error('[Recorder] failed to push chunk:', e)
-            }
+            })
           }
         }
       }
@@ -121,6 +123,9 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
 
       mediaRecorderRef.current.onstop = async () => {
         try {
+          // ondataavailable for the final chunk runs before onstop, but its
+          // arrayBuffer conversion is asynchronous. Preserve WS frame order.
+          await pendingChunkSendRef.current
           // Stop all tracks
           mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop())
           streamRef.current?.getTracks().forEach(track => track.stop())
@@ -223,7 +228,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     function tryRawPCM(decodedBytes: Uint8Array | null) {
       console.log('[Replay] Trying raw PCM playback...')
       try {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext
+        const AudioContextClass = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
         if (!AudioContextClass) {
           console.error('[Replay] No AudioContext')
           return
@@ -233,7 +238,7 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         const sampleRate = 32000
         const numChannels = 1
 
-        let bytesToUse = decodedBytes
+        const bytesToUse = decodedBytes
         if (!bytesToUse) {
           console.error('[Replay] No bytes available for PCM playback')
           return

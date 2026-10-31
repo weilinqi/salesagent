@@ -6,8 +6,9 @@
  */
 import { useState, useRef, useCallback } from 'react'
 
-// Ensure AudioContext is available
-declare const AudioContext: typeof undefined | ((options?: any) => any)
+interface AudioContextWindow extends Window {
+  webkitAudioContext?: typeof AudioContext
+}
 
 interface UseAudioStreamReturn {
   isPlaying: boolean
@@ -15,12 +16,22 @@ interface UseAudioStreamReturn {
   currentPosition: number
   duration: number
   playChunk: (chunk: Uint8Array) => void
+  playPcmChunk: (chunk: Uint8Array, sampleRate: number) => void
   playBase64Chunk: (base64: string) => void
   playStoredAudio: (base64Audio: string) => void
   stop: () => void
   pause: () => void
   resume: () => void
   currentAudioUrl: string | null
+}
+
+const FIRST_MP3_DECODE_BYTES = 4096
+
+export function shouldAttemptMp3Decode(
+  totalBytes: number,
+  hasPendingBuffers: boolean,
+): boolean {
+  return totalBytes >= FIRST_MP3_DECODE_BYTES || hasPendingBuffers
 }
 
 export function useAudioStream(): UseAudioStreamReturn {
@@ -45,10 +56,13 @@ export function useAudioStream(): UseAudioStreamReturn {
   const nextStartTimeRef = useRef<number>(0)
   // 排队播放用的 Interval ID
   const drainIntervalRef = useRef<number | null>(null)
+  // 浏览器端首播计时：首个 MP3 chunk 到达 → 首个 AudioBuffer 被调度。
+  const firstMp3ChunkAtRef = useRef<number | null>(null)
+  const firstPlaybackLoggedRef = useRef(false)
 
   const ensureAudioContext = useCallback((): AudioContext | null => {
     if (typeof window === 'undefined') return null
-    const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext
+    const Ctx = window.AudioContext || (window as AudioContextWindow).webkitAudioContext
     if (!Ctx) return null
     const ctx = audioCtxRef.current ?? new Ctx()
     audioCtxRef.current = ctx
@@ -177,6 +191,16 @@ export function useAudioStream(): UseAudioStreamReturn {
       if (!isPlayingRef.current) processQueue()
       return
     }
+    if (
+      !isPlayingRef.current &&
+      mp3AccumRef.current.length === 0 &&
+      pendingBuffersRef.current.length === 0
+    ) {
+      firstMp3ChunkAtRef.current = performance.now()
+      firstPlaybackLoggedRef.current = false
+    } else if (firstMp3ChunkAtRef.current === null) {
+      firstMp3ChunkAtRef.current = performance.now()
+    }
     // P4: 把 chunk 累积到 mp3 缓冲，等解码出 AudioBuffer 后立即入队播放
     mp3AccumRef.current.push(chunk)
     // 合并所有累积的 mp3 字节，尝试 decodeAudioData
@@ -185,8 +209,9 @@ export function useAudioStream(): UseAudioStreamReturn {
     let off = 0
     for (const c of mp3AccumRef.current) { combined.set(c, off); off += c.length }
 
-    // 累积到 8KB 以上再尝试解码（mp3 frame 通常 1-2KB，8KB 大概率有完整 frame）
-    if (combined.length < 8192 && pendingBuffersRef.current.length === 0) {
+    // 首次累积到 4KB 就尝试解码；如果 MP3 还不完整，catch 会保留全部字节，
+    // 下一个 chunk 到达后继续重试。
+    if (!shouldAttemptMp3Decode(combined.length, pendingBuffersRef.current.length > 0)) {
       return
     }
     // 把 combined copy 出来（不要消耗 mp3AccumRef，否则下个 chunk 重复数据）
@@ -203,7 +228,18 @@ export function useAudioStream(): UseAudioStreamReturn {
           isPlayingRef.current = true
           setIsPlaying(true)
           if (nextStartTimeRef.current < ctx.currentTime) {
-            nextStartTimeRef.current = ctx.currentTime + 0.05  // 50ms 缓冲
+            nextStartTimeRef.current = ctx.currentTime + 0.02  // 20ms 首播缓冲
+          }
+          if (!firstPlaybackLoggedRef.current && firstMp3ChunkAtRef.current !== null) {
+            const scheduledDelayMs = Math.round(
+              performance.now() - firstMp3ChunkAtRef.current +
+              Math.max(0, nextStartTimeRef.current - ctx.currentTime) * 1000,
+            )
+            console.log(
+              `[LATENCY][browser] first_playback_scheduled=${scheduledDelayMs}ms ` +
+              'after_first_audio_chunk',
+            )
+            firstPlaybackLoggedRef.current = true
           }
           drainQueue()
         }
@@ -213,6 +249,25 @@ export function useAudioStream(): UseAudioStreamReturn {
         console.warn('[AudioStream] decodeAudioData failed (will retry with more chunks):', err.message)
       })
   }, [ensureAudioContext, drainQueue, processQueue])
+
+  const playPcmChunk = useCallback((chunk: Uint8Array, sampleRate: number) => {
+    const ctx = ensureAudioContext()
+    const sampleCount = Math.floor(chunk.byteLength / 2)
+    if (!ctx || sampleCount === 0) return
+    const buffer = ctx.createBuffer(1, sampleCount, sampleRate)
+    const samples = buffer.getChannelData(0)
+    const pcm = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+    for (let i = 0; i < sampleCount; i++) {
+      samples[i] = pcm.getInt16(i * 2, true) / 32768
+    }
+    pendingBuffersRef.current.push(buffer)
+    if (!isPlayingRef.current) {
+      isPlayingRef.current = true
+      setIsPlaying(true)
+      nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime + 0.05)
+    }
+    drainQueue()
+  }, [ensureAudioContext, drainQueue])
 
   const playBase64Chunk = useCallback((base64: string) => {
     const binaryString = atob(base64)
@@ -341,6 +396,8 @@ export function useAudioStream(): UseAudioStreamReturn {
     mp3AccumRef.current = []
     pendingBuffersRef.current = []
     nextStartTimeRef.current = 0
+    firstMp3ChunkAtRef.current = null
+    firstPlaybackLoggedRef.current = false
     if (drainIntervalRef.current !== null) {
       clearInterval(drainIntervalRef.current)
       drainIntervalRef.current = null
@@ -373,6 +430,7 @@ export function useAudioStream(): UseAudioStreamReturn {
     currentPosition,
     duration,
     playChunk,
+    playPcmChunk,
     playBase64Chunk,
     playStoredAudio,
     stop,

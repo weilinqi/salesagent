@@ -34,7 +34,7 @@ interface MessageItem {
 interface ChatContainerProps {
   messages: MessageItem[]
   customerLabel?: string
-  onSendMessage: (message: string, audioData?: string) => void
+  onSendMessage: (message: string, audioData?: string, voiceOnly?: boolean) => void
   onVoiceStart?: () => void
   onVoiceEnd?: () => void
   /** 流式 ASR：录音时把每个分片推给后端 */
@@ -73,7 +73,7 @@ const ChatContainer = ({
     if (isNearBottom) {
       scrollToBottom()
     }
-  }, [messages])
+  }, [messages, isNearBottom])
 
   const handleScroll = () => {
     const container = containerRef.current

@@ -71,7 +71,10 @@ class Settings(BaseSettings):
 
     # MiniMax LLM
     MINIMAX_API_KEY: Optional[str] = None
+    MINIMAX_FALLBACK_API_KEY: Optional[str] = Field(default=None, repr=False)
     MINIMAX_BASE_URL: str = "https://api.minimaxi.com/v1"
+    # MiniMax is reachable directly; opt in only when a working proxy is required.
+    MINIMAX_USE_PROXY: bool = False
 
     # DeepSeek LLM
     DEEPSEEK_API_KEY: Optional[str] = None
