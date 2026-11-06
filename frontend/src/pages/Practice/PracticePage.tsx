@@ -2,7 +2,7 @@
  * PracticePage - 场景选择与配置页面
  *
  * Flow:
- * 1. 场景选择 -> 2. 角色配置 -> 3. 开始对练
+ * 1. 场景选择 -> 2. 介绍推销对象 -> 3. 开始对练
  *
  * Story: 1.1 场景选择与配置
  */
@@ -11,17 +11,27 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { usePracticeStore } from '../../stores/practiceStore'
 import { useSpinStore } from '../../stores/spinStore'
 import { useAuth } from '../../contexts/AuthContext'
-import { RoleConfig } from '../../api/practice'
+import { RoleConfig, PracticeSessionContext } from '../../api/practice'
 import ScenarioCard from '../../components/business/practice/ScenarioCard'
 import RoleSelector from '../../components/business/practice/RoleSelector'
-import PrePracticeForm, { UserContext } from '../../components/business/practice/PrePracticeForm'
+import CustomerPreparation, { PreparationProfile, Background } from '../../components/business/practice/CustomerPreparation'
 
-type Step = 'select' | 'configure' | 'fillUserContext' | 'ready'
+type Step = 'select' | 'configure' | 'ready'
 
 const PracticePage = () => {
   const navigate = useNavigate()
   const location = useLocation()
-  const spinStore = useSpinStore()
+  const spin = useSpinStore()
+  const previous: PracticeSessionContext = (location.state as PracticeSessionContext | null) || {
+    customerContext: spin.customerContext || undefined,
+    investigationResult: spin.investigationResult || undefined,
+  }
+  const initialProfile: Partial<PreparationProfile> = {
+    industry: previous?.customerContext?.industry || '',
+    target: previous?.investigationResult?.title || previous?.investigationResult?.name || '',
+    organization: previous?.investigationResult?.company || '',
+    needs: previous?.customerContext?.pain_points?.join('；') || '',
+  }
   const { user } = useAuth()
   const {
     scenarios,
@@ -39,8 +49,6 @@ const PracticePage = () => {
   const [currentStep, setCurrentStep] = useState<Step>('select')
   const [isStarting, setIsStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
-  const [userContext, setUserContext] = useState<UserContext | null>(null)
-  const [showUserContextForm, setShowUserContextForm] = useState(false)
 
   useEffect(() => {
     fetchScenarios()
@@ -50,7 +58,7 @@ const PracticePage = () => {
     if (selectedScenario && currentStep === 'select') {
       setCurrentStep('configure')
     }
-  }, [selectedScenario])
+  }, [selectedScenario, currentStep])
 
   // Navigate to chat page when session is ready
   useEffect(() => {
@@ -67,37 +75,20 @@ const PracticePage = () => {
     setRoleConfig(config)
   }
 
-  const handleStartPractice = async () => {
-    if (!selectedScenario || !selectedRoleConfig) return
-
-    // 必须先填销售员档案（userContext）
-    if (!userContext) {
-      setShowUserContextForm(true)
-      return
-    }
-
+  const startPractice = async (profile: PreparationProfile, background?: Background) => {
     setIsStarting(true)
     setStartError(null)
-
     try {
-      const spinState = location.state as { customerContext?: any; investigationResult?: any } | null
-      const customerContext = spinState?.customerContext || spinStore.customerContext
-      const investigationResult = spinState?.investigationResult || spinStore.investigationResult
-
-      await startSession({ customerContext, investigationResult, userContext })
+      if (!selectedRoleConfig) setRoleConfig({ position_level: 'middle', personality: 'rational', decision_style: 'value_oriented', voice: 'male-qn-qingse' })
+      await startSession({
+        customerContext: { industry: profile.industry, scale: '', pain_points: profile.needs ? [profile.needs] : [], preparation: profile, preparation_background: background },
+        investigationResult: previous?.investigationResult?.company === profile.organization && previous?.investigationResult?.title === profile.target ? previous.investigationResult : undefined,
+        userContext: { sales_name: user?.full_name || user?.username || '销售员', practice_goals: [profile.goal] },
+      })
       setCurrentStep('ready')
     } catch (error) {
       setStartError(error instanceof Error ? error.message : '启动对练失败')
-    } finally {
-      setIsStarting(false)
-    }
-  }
-
-  const handleUserContextSubmit = (ctx: UserContext) => {
-    setUserContext(ctx)
-    setShowUserContextForm(false)
-    // 立即触发开始
-    setTimeout(() => handleStartPractice(), 50)
+    } finally { setIsStarting(false) }
   }
 
   const handleReset = () => {
@@ -105,10 +96,6 @@ const PracticePage = () => {
     setCurrentStep('select')
     setStartError(null)
   }
-
-  const isRoleConfigComplete = selectedRoleConfig?.position_level &&
-                                selectedRoleConfig?.personality &&
-                                selectedRoleConfig?.decision_style
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -125,7 +112,7 @@ const PracticePage = () => {
         <div className="flex items-center justify-center gap-4">
           <StepIndicator number={1} label="选择场景" active={currentStep === 'select'} completed={currentStep !== 'select'} />
           <div className={`w-12 h-0.5 ${currentStep !== 'select' ? 'bg-primary' : 'bg-gray-300'}`} />
-          <StepIndicator number={2} label="配置角色" active={currentStep === 'configure'} completed={currentStep === 'ready'} />
+          <StepIndicator number={2} label="介绍推销对象" active={currentStep === 'configure'} completed={currentStep === 'ready'} />
           <div className={`w-12 h-0.5 ${currentStep === 'ready' ? 'bg-primary' : 'bg-gray-300'}`} />
           <StepIndicator number={3} label="开始对练" active={currentStep === 'ready'} completed={false} />
         </div>
@@ -178,7 +165,7 @@ const PracticePage = () => {
           <div className="bg-white rounded-xl shadow-sm p-6">
             <div className="flex items-center justify-between mb-6">
               <div>
-                <h2 className="text-lg font-semibold text-gray-900">配置AI客户角色</h2>
+                <h2 className="text-lg font-semibold text-gray-900">准备针对性对练</h2>
                 <p className="text-sm text-gray-500 mt-1">
                   当前场景: <span className="font-medium text-primary">{selectedScenario?.name}</span>
                 </p>
@@ -194,37 +181,13 @@ const PracticePage = () => {
               </button>
             </div>
 
-            <RoleSelector
-              selectedConfig={selectedRoleConfig}
-              onChange={handleRoleConfigChange}
-            />
-
-            <div className="mt-8 flex justify-end">
-              <button
-                onClick={handleStartPractice}
-                disabled={!isRoleConfigComplete || isStarting}
-                className={`
-                  px-6 py-3 rounded-lg font-medium transition-all duration-200
-                  ${isRoleConfigComplete && !isStarting
-                    ? 'bg-primary text-white hover:bg-primary/90 shadow-md'
-                    : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  }
-                `}
-              >
-                {isStarting ? '准备中...' : '下一步：填写销售员档案 →'}
-              </button>
-            </div>
+            <CustomerPreparation initialProfile={initialProfile} onStart={startPractice} starting={isStarting} />
+            <details className="mt-6">
+              <summary className="cursor-pointer text-sm text-gray-500">调整模拟角色风格（可选）</summary>
+              <RoleSelector selectedConfig={selectedRoleConfig} onChange={handleRoleConfigChange} />
+            </details>
           </div>
         )}
-
-      {/* 销售员档案填写弹窗（点"开始对练"后弹出） */}
-      {showUserContextForm && (
-        <PrePracticeForm
-          defaultName={user?.full_name || user?.username || ''}
-          onSubmit={handleUserContextSubmit}
-          onCancel={() => setShowUserContextForm(false)}
-        />
-      )}
 
         {/* Step 3: Ready State */}
         {currentStep === 'ready' && (
@@ -236,7 +199,7 @@ const PracticePage = () => {
             </div>
             <h2 className="text-xl font-semibold text-gray-900 mb-2">对练已准备就绪</h2>
             <p className="text-gray-500 mb-6">
-              AI客户角色已配置完成，WebSocket连接将在下一版本实现
+              对象信息已确认，即将开始针对性对练
             </p>
 
             <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">

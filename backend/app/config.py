@@ -71,6 +71,10 @@ class Settings(BaseSettings):
 
     # MiniMax LLM
     MINIMAX_API_KEY: Optional[str] = None
+    MINIMAX_FALLBACK_API_KEY: Optional[str] = Field(default=None, repr=False)
+    MINIMAX_SEARCH_API_KEY: Optional[str] = Field(default=None, repr=False)
+    MINIMAX_API_HOST: str = "https://api.minimaxi.com"
+    MINIMAX_USE_PROXY: bool = False
     MINIMAX_BASE_URL: str = "https://api.minimaxi.com/v1"
 
     # DeepSeek LLM
@@ -95,7 +99,7 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "salesagent"
 
     # CORS
-    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
+    CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"]
 
 
 settings = Settings()

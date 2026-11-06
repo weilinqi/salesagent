@@ -586,7 +586,11 @@ async def _init_persona_and_first_message(websocket, session_id: str,
         session_info = session_manager.get_session_info(session_id) or {}
         investigation_result = session_info.get("investigation_result")
         persona = None
-        if investigation_result and investigation_result.get("name"):
+        prepared = (session_info.get("customer_context") or {}).get("preparation")
+        if prepared:
+            from app.services.preparation import build_prepared_persona
+            persona = build_prepared_persona(prepared, (session_info.get("customer_context") or {}).get("preparation_background"))
+        elif investigation_result and investigation_result.get("name"):
             # Convert investigation_result to persona shape. Pull every field
             # the SPIN investigation endpoint returned so the LLM has full
             # context for role-playing (recent_news, media_reports, etc).
