@@ -180,6 +180,16 @@ async def create_session(
             detail="场景不存在或未审核通过"
         )
 
+    prepared = (session_data.customer_context or {}).get("preparation")
+    if prepared is not None:
+        try:
+            profile = PreparationProfile(**prepared)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="对象信息格式不正确")
+        if not profile.ready:
+            raise HTTPException(status_code=422, detail="请补充产品或服务、对象身份和练习目标")
+        session_data.customer_context["preparation"] = profile.model_dump()
+
     # Create practice session
     # Use default anonymous user if not provided
     effective_user_id = current_user.id
@@ -1117,3 +1127,26 @@ async def get_history_stats(
         last_30_days=last_30_stats,
         last_90_days=last_90_stats
     )
+
+
+# Guided preparation shares the existing authenticated practice router.
+from app.services.preparation import (PreparationRequest, BackgroundRequest,
+    collect_information, lookup_background, PreparationProfile)
+
+@router.post("/preparation/collect")
+async def prepare_customer(body: PreparationRequest):
+    return await collect_information(body.profile, body.message)
+
+@router.post("/preparation/background")
+async def prepare_background(body: BackgroundRequest):
+    return await lookup_background(body.organization.strip(), body.product.strip(), body.needs.strip())
+
+
+@router.post("/preparation/preview")
+async def preview_customer(body: PreparationRequest):
+    from app.services.preparation_extraction import extract_explicit_information
+    values = body.profile.model_dump()
+    for key, value in extract_explicit_information(body.message).items():
+        if key in values and not values[key]:
+            values[key] = value
+    return {"profile": PreparationProfile(**values).model_dump()}

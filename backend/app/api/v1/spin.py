@@ -142,10 +142,10 @@ def generate_investigation_prompt(customer_name: str, web_context: str = "") -> 
 
 async def _do_mcp_search(query: str, num_results: int = 5) -> str:
     """
-    通过 MiniMax LLM 自身知识做调查（网络搜索暂不可用）
+    通过 MiniMax 官方搜索接口获取带来源的网页摘要
     """
-    # Windows subprocess MCP 调用有兼容性问题，暂时用 LLM 知识回答
-    return ""
+    from app.services.search import format_search_context
+    return await format_search_context(query, num_results)
 
 
 class WebSearchRequest(BaseModel):

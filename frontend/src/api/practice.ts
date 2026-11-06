@@ -32,6 +32,33 @@ export interface SessionCreateResponse {
   first_message: string
 }
 
+export interface CustomerContext {
+  preparation_background?: import('../components/business/practice/CustomerPreparation').Background
+  preparation?: import('../components/business/practice/CustomerPreparation').PreparationProfile
+  industry: string
+  scale: string
+  pain_points: string[]
+}
+
+export interface InvestigationContext {
+  name?: string
+  title?: string
+  company?: string
+  background?: string
+  potential_pains?: string[]
+}
+
+export interface PracticeSessionContext {
+  customerContext?: CustomerContext
+  investigationResult?: InvestigationContext
+  userContext?: object
+}
+
+export interface PracticeSessionDetail {
+  id: string
+  scenario_id: string
+}
+
 // Session list types
 export interface SessionListItem {
   id: string
@@ -137,9 +164,9 @@ const api = {
   async createSession(
     scenarioId: string,
     roleConfig: RoleConfig,
-    customerContext?: any,
-    investigationResult?: any,
-    userContext?: any
+    customerContext?: CustomerContext,
+    investigationResult?: InvestigationContext,
+    userContext?: object
   ): Promise<SessionCreateResponse> {
     const response = await axios.post(`${API_BASE}/practice/sessions`, {
       scenario_id: scenarioId,
@@ -217,7 +244,7 @@ const api = {
   /**
    * 获取单个会话详情
    */
-  async getSession(sessionId: string): Promise<any> {
+  async getSession(sessionId: string): Promise<PracticeSessionDetail> {
     const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}`)
     return response.data
   },

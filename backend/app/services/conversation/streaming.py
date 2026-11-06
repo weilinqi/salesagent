@@ -1,3 +1,5 @@
+import httpx
+from app.services.llm.minimax_fallback import MiniMaxAPIError, credential_error
 """
 Streaming Pipeline — 把 LLM + TTS 改成流式，句子级切片，逐句推送
 
@@ -450,6 +452,7 @@ async def stream_pipeline(
     audio_chunks_emitted: List[bytes] = []
     tts_tasks: List[asyncio.Task] = []
     t0 = time.time()
+    monitor_task = None
     stop_event = asyncio.Event()  # 通知 monitor 退出
     try:
         token_count = 0
@@ -563,10 +566,20 @@ async def stream_pipeline(
         print(f"[STREAM] LLM error: {e}")
         import traceback
         traceback.print_exc()
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 402:
+            error_message = "MiniMax 账户额度不足，暂时无法生成回复。请检查账户余额或套餐额度。"
+        elif isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+            error_message = "MiniMax 返回 429，当前额度或请求频率受限。请检查 Token Plan 额度后重试。"
+        else:
+            error_message = "AI 服务暂时无法生成回复，请稍后重试。"
+        if isinstance(e, MiniMaxAPIError) and credential_error(e):
+            error_message = "MiniMax 账户额度、请求限额或 key 权限受限，请检查模型账户。"
+            if e.backup_attempted:
+                error_message = "主 key 请求失败，备用 key 也不可用。" + error_message
         await websocket_send({
             "type": "ai_streaming_end",
             "id": msg_id,
-            "content": "抱歉，我现在无法回答。",
+            "content": error_message,
             "audio_data": "",
             "timestamp": time.time(),
         })
@@ -578,6 +591,14 @@ async def stream_pipeline(
             "voice_modify": voice_modify,
             "knowledge_refs": knowledge_refs,
         }
+
+    finally:
+        stop_event.set()
+        pending = [task for task in [monitor_task, *tts_tasks] if task is not None and not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     elapsed_ms = (time.time() - t0) * 1000
     print(f"[STREAM] LLM+sentences in {elapsed_ms:.0f}ms, "
