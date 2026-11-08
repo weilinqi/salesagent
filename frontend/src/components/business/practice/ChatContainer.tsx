@@ -44,6 +44,8 @@ interface ChatContainerProps {
   isDisabled?: boolean
   isSending?: boolean
   isConnected?: boolean
+  connectionError?: string | null
+  onReconnect?: () => void
   isPlayingAudio?: boolean
 }
 
@@ -59,6 +61,8 @@ const ChatContainer = ({
   isDisabled = false,
   isSending = false,
   isConnected = false,
+  connectionError = null,
+  onReconnect,
   isPlayingAudio = false
 }: ChatContainerProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -99,7 +103,10 @@ const ChatContainer = ({
       {!isConnected && !isDisabled && (
         <div className="bg-yellow-50 border-b border-yellow-100 px-4 py-2">
           <p className="text-sm text-yellow-700 text-center">
-            正在连接AI服务器...
+            {connectionError || '正在连接对练服务器…'}
+            {connectionError && onReconnect && (
+              <button onClick={onReconnect} className="ml-3 underline">重新连接</button>
+            )}
           </p>
         </div>
       )}

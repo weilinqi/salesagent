@@ -277,7 +277,7 @@ const PracticeChatPage = () => {
     console.log('WebSocket disconnected')
   }, [])
 
-  const { isConnected, sendMessage: wsSendMessage, sendStopPlayback, sendVoiceStart, sendVoiceEnd, sendAudioChunk } = useWebSocket({
+  const { isConnected, isConnecting, connectionError, reconnect, sendMessage: wsSendMessage, sendStopPlayback, sendVoiceStart, sendVoiceEnd, sendAudioChunk } = useWebSocket({
     url: wsUrl,
     onMessage: handleMessage,
     onAudioChunk: (chunk) => {
@@ -398,7 +398,7 @@ const PracticeChatPage = () => {
               ) : (
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
-                  连接中...
+                  {isConnecting ? '连接中…' : '连接未建立'}
                 </span>
               )}
             </p>
@@ -484,6 +484,8 @@ const PracticeChatPage = () => {
             isDisabled={currentSession?.status === 'completed'}
             isSending={isSending}
             isConnected={isConnected}
+            connectionError={connectionError}
+            onReconnect={reconnect}
             isPlayingAudio={audioStream.isPlaying}
           />
         </div>

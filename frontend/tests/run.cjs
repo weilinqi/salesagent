@@ -4,3 +4,4 @@ require('./websocket.test.cjs')
 
 require('./knowledge.test.cjs')
 require('./history.test.cjs')
+require('./backendProxy.test.cjs')
