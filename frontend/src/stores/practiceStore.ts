@@ -2,7 +2,7 @@
  * Practice Store - Zustand state management for practice sessions
  */
 import { create } from 'zustand'
-import api, { PracticeSessionContext, RoleConfig, Scenario } from '../api/practice'
+import api, { PracticeSessionContext, PracticeSessionDetail, RoleConfig, Scenario, CustomerContext, InvestigationContext } from '../api/practice'
 
 // Message type
 interface MessageItem {
@@ -41,6 +41,9 @@ interface PracticeSession {
   websocket_url: string | null
   first_message: string | null
   persona: CustomerPersona | null
+  customer_context?: CustomerContext | null
+  investigation_result?: InvestigationContext | null
+  user_context?: Record<string, unknown> | null
 }
 
 // Phase summary type
@@ -72,6 +75,7 @@ interface PracticeState {
   startSession: (spinContext?: PracticeSessionContext) => Promise<void>
   endSession: () => Promise<void>
   resetSession: () => void
+  resumeSession: (session: PracticeSessionDetail) => void
 
   // Chat actions
   addMessage: (message: Omit<MessageItem, 'id' | 'timestamp'>) => void
@@ -196,6 +200,19 @@ export const usePracticeStore = create<PracticeState>()(
     savePersistedSession(get().currentSession)
   },
 
+  resumeSession: (detail) => {
+    const session: PracticeSession = {
+      id: detail.id, scenario_id: detail.scenario_id, status: detail.status,
+      current_phase: detail.current_phase || 'opening', websocket_url: `/ws/practice/${detail.id}`,
+      first_message: null, persona: detail.persona || null,
+      customer_context: detail.customer_context, investigation_result: detail.investigation_result,
+      user_context: detail.user_context,
+    }
+    set({ currentSession: session, selectedScenario: detail.scenario || null,
+      selectedRoleConfig: detail.role_config, messages: [], phaseSummaries: [], scenarioError: null })
+    savePersistedSession(session)
+  },
+
   endSession: async () => {
     const { currentSession } = get()
     if (!currentSession) return
@@ -203,6 +220,7 @@ export const usePracticeStore = create<PracticeState>()(
     try {
       await api.endSession(currentSession.id)
       set({ currentSession: null, messages: [], phaseSummaries: [] })
+      savePersistedSession(null)
     } catch (error) {
       set({
         scenarioError: error instanceof Error ? error.message : '结束会话失败'
@@ -218,6 +236,7 @@ export const usePracticeStore = create<PracticeState>()(
       messages: [],
       phaseSummaries: []
     })
+    savePersistedSession(null)
   },
 
   // Chat actions
@@ -244,6 +263,7 @@ export const usePracticeStore = create<PracticeState>()(
         ? { ...state.currentSession, current_phase: phase }
         : null
     }))
+    savePersistedSession(get().currentSession)
   },
 
   addPhaseSummary: (summary) => {

@@ -585,12 +585,12 @@ async def _init_persona_and_first_message(websocket, session_id: str,
         # Check for pre-existing investigation_result (from SPIN flow)
         session_info = session_manager.get_session_info(session_id) or {}
         investigation_result = session_info.get("investigation_result")
-        persona = None
+        persona = session_info.get('persona')
         prepared = (session_info.get("customer_context") or {}).get("preparation")
-        if prepared:
+        if not persona and prepared:
             from app.services.preparation import build_prepared_persona
             persona = build_prepared_persona(prepared, (session_info.get("customer_context") or {}).get("preparation_background"))
-        elif investigation_result and investigation_result.get("name"):
+        elif not persona and investigation_result and investigation_result.get("name"):
             # Convert investigation_result to persona shape. Pull every field
             # the SPIN investigation endpoint returned so the LLM has full
             # context for role-playing (recent_news, media_reports, etc).
@@ -659,12 +659,19 @@ async def _init_persona_and_first_message(websocket, session_id: str,
                 "recent_activities": "; ".join(recent_news[:5]) if recent_news else ""
             }
             print(f"[WS] Using investigation_result as persona: {persona.get('name')} - {persona.get('title')}@{persona.get('company')}")
-        else:
+        elif not persona:
             print(f"[WS] Generating persona for {session_id}...")
             persona = await generate_persona_for_session(scenario_name, role_config)
             print(f"[WS] Persona ready: {persona.get('name')} - {persona.get('title')}@{persona.get('company')}")
 
         session_manager.update_session_field(session_id, "persona", persona)
+        # Save the generated persona in the existing JSON snapshot so restart or
+        # another browser does not generate a different customer for this session.
+        with SessionLocal() as db:
+            persisted = db.get(PracticeSession, session_id)
+            if persisted is not None:
+                persisted.role_config = {**(persisted.role_config or {}), '__persona': persona}
+                db.commit()
 
         first_text = await generate_opening_message(
             scenario_name=scenario_name,
@@ -695,6 +702,7 @@ async def _init_persona_and_first_message(websocket, session_id: str,
             first_text_with_tags = first_text
 
         session_manager.add_message(session_id, "ai", first_text_with_tags)
+        save_message_to_db(session_id, "ai", first_text_with_tags)
         first_msg_id = f"msg-{session_id}-init"
 
         await safe_send_message(session_id, {
@@ -785,11 +793,23 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         user_context = persisted.user_context
         scenario = db.get(Scenario, scenario_id) if scenario_id else None
         scenario_name = scenario.name if scenario else "AI客户"
+        saved_phase = persisted.current_phase or 'opening'
+        saved_persona = role_config.get('__persona')
+        history = [(row.role, row.content) for row in db.query(PracticeMessage)
+                   .filter(PracticeMessage.session_id == session_id)
+                   .order_by(PracticeMessage.created_at, PracticeMessage.id).all()]
     await manager.connect(websocket, session_id)
     await safe_send_status(session_id, ConversationState.IDLE, {"phase": "preparing_persona"})
     if not session_manager.get_session_info(session_id):
         session_manager.create_session(session_id, scenario_id, role_config,
                                        customer_context, investigation_result, user_context)
+        session_manager.update_phase(session_id, saved_phase)
+        if saved_persona:
+            session_manager.update_session_field(session_id, 'persona', saved_persona)
+    if not session_manager.get_context(session_id):
+        for role, content in history:
+            session_manager.add_message(session_id, role, content)
+    is_new_conversation = not session_manager.get_context(session_id)
     tasks = set()
     def spawn(coroutine):
         task = asyncio.create_task(coroutine)
@@ -800,9 +820,10 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # ------------------------------------------------------------------
     # Fire-and-forget persona + opening message (slow LLM)
     # ------------------------------------------------------------------
-    spawn(_init_persona_and_first_message(
-        websocket, session_id, scenario_name, scenario_id, role_config
-    ))
+    if is_new_conversation:
+        spawn(_init_persona_and_first_message(
+            websocket, session_id, scenario_name, scenario_id, role_config
+        ))
 
     # ------------------------------------------------------------------
     # Send immediate placeholder so the UI has something to show
@@ -829,13 +850,14 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         print(f"[WS] DEBUG placeholder ERROR: {e}")
         traceback.print_exc()
 
-    await safe_send_message(session_id, {
-        "type": "ai_message",
-        "id": f"msg-{session_id}-init",
-        "content": placeholder_text,
-        "audio_data": "",
-        "timestamp": datetime.utcnow().isoformat()
-    })
+    if is_new_conversation:
+        await safe_send_message(session_id, {
+            "type": "ai_message",
+            "id": f"msg-{session_id}-init",
+            "content": placeholder_text,
+            "audio_data": "",
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
     # ------------------------------------------------------------------
     # Receive loop (single, well-defined)

@@ -251,14 +251,12 @@ const HistoryPage = () => {
 
                   {/* Actions */}
                   <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                    {session.status !== 'completed' && (
                       <button
                         onClick={() => handleContinueSession(session)}
                         className="px-3 py-1.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm"
                       >
-                        继续
+                        {session.status === 'completed' ? '查看对话' : '继续'}
                       </button>
-                    )}
                     <button
                       onClick={() => handleViewSession(session)}
                       className="px-3 py-1.5 bg-primary text-white rounded-lg hover:bg-primary/90 text-sm"

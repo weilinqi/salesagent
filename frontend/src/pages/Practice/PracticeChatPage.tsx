@@ -11,7 +11,8 @@
  * Story: 1.2 语音对话与实时交互
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import axios from 'axios'
 import { usePracticeStore } from '../../stores/practiceStore'
 import { useWebSocket, StreamMessage, KnowledgeRef } from '../../hooks/useWebSocket'
 import { useAudioStream } from '../../hooks/useAudioStream'
@@ -19,6 +20,7 @@ import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
 import SpinStageHint from '../../components/business/practice/SpinStageHint'
 import api, { RoleConfig } from '../../api/practice'
+import { loadSessionHistory } from '../../utils/sessionHistory'
 
 interface MessageItem {
   id: string
@@ -45,12 +47,14 @@ interface PhaseSummaryData {
 
 const PracticeChatPage = () => {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const {
     currentSession,
     selectedScenario,
     selectedRoleConfig,
     updateSessionPhase,
-    updatePersona
+    updatePersona,
+    resumeSession
   } = usePracticeStore()
 
   const [messages_, setMessages_] = useState<MessageItem[]>([])
@@ -58,6 +62,10 @@ const PracticeChatPage = () => {
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false)
   const [currentPhaseSummary, setCurrentPhaseSummary] = useState<PhaseSummaryData | null>(null)
   const [isSummaryLoading, setIsSummaryLoading] = useState(false)
+  const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
+  const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyRetry, setHistoryRetry] = useState(0)
 
   // Track current AI message ID for audio chunk accumulation
   const currentAIMessageIdRef = useRef<string | null>(null)
@@ -70,7 +78,7 @@ const PracticeChatPage = () => {
 // always sends it.
 
   // 销售员自填的练习档案（从 practiceStore 传过来，banner 展示用）
-  const userContext = (selectedRoleConfig as any)?.__userContext as
+  const userContext = (currentSession?.user_context || (selectedRoleConfig as any)?.__userContext) as
     | {
         sales_level?: string
         years_experience?: number
@@ -81,24 +89,33 @@ const PracticeChatPage = () => {
     | undefined
   const practiceGoals = userContext?.practice_goals ?? []
 
-  // Wait for session to be loaded from store before deciding to redirect.
-  // On first render, currentSession may be null while zustand rehydrates,
-  // so we wait one tick before redirecting to avoid an infinite navigation loop.
-  const [hasCheckedSession, setHasCheckedSession] = useState(false)
   useEffect(() => {
-    const timer = setTimeout(() => setHasCheckedSession(true), 100)
-    return () => clearTimeout(timer)
-  }, [])
-  useEffect(() => {
-    if (hasCheckedSession && !currentSession?.id) {
+    if (!targetSessionId) {
       navigate('/practice')
+      return
     }
-  }, [hasCheckedSession, currentSession, navigate])
+    const controller = new AbortController()
+    setLoadedSessionId(null)
+    setHistoryError(null)
+    setMessages_([])
+    currentAIMessageIdRef.current = null
+    void loadSessionHistory(targetSessionId, controller.signal).then(({ session, messages }) => {
+      if (controller.signal.aborted) return
+      resumeSession(session)
+      setMessages_(messages)
+      setLoadedSessionId(session.id)
+    }).catch((error: unknown) => {
+      if (controller.signal.aborted) return
+      setHistoryError(axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string'
+        ? error.response.data.detail : '历史记录加载失败，请重试；不会创建新会话。')
+    })
+    return () => controller.abort()
+  }, [targetSessionId, historyRetry, resumeSession, navigate])
 
   // Build WebSocket URL - 走 vite 代理（同页同源，自动跟随 vite.config.ts 的 target）
   // 这样切换后端端口只改一处；硬编码后端地址会绕过 Vite proxy
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = currentSession?.id && currentSession.id.length > 10
+  const wsUrl = loadedSessionId === targetSessionId && currentSession?.status === 'active' && currentSession.id.length > 10
     ? `${wsProtocol}//${window.location.host}/ws/practice/${currentSession.id}`
     : null
 
@@ -346,6 +363,17 @@ const PracticeChatPage = () => {
     }
   }, [currentSession])
 
+  if (historyError) return (
+    <div role="alert" className="p-8 text-center space-y-4">
+      <p>{historyError}</p>
+      <button onClick={() => setHistoryRetry(value => value + 1)} className="text-primary underline">重新加载历史记录</button>
+      <button onClick={() => navigate('/history')} className="ml-4 text-primary underline">返回历史记录</button>
+    </div>
+  )
+  if (loadedSessionId !== targetSessionId || !targetSessionId) return (
+    <div role="status" className="p-8 text-center text-gray-500">正在恢复上次对话和设置…</div>
+  )
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {/* Header */}
@@ -362,7 +390,7 @@ const PracticeChatPage = () => {
           <div>
             <h1 className="font-semibold text-gray-900">{selectedScenario?.name || '对练中'}</h1>
             <p className="text-xs text-gray-500">
-              {isConnected ? (
+              {currentSession?.status === 'completed' ? '历史对话 · 已结束' : isConnected ? (
                 <span className="flex items-center gap-1">
                   <span className="w-2 h-2 bg-success rounded-full" />
                   已连接

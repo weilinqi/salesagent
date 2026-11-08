@@ -57,6 +57,21 @@ export interface PracticeSessionContext {
 export interface PracticeSessionDetail {
   id: string
   scenario_id: string
+  scenario?: Scenario | null
+  status: 'preparing' | 'active' | 'completed'
+  current_phase: 'opening' | 'discovery' | 'needs' | 'proposal' | 'closing' | null
+  role_config: RoleConfig
+  customer_context?: CustomerContext | null
+  investigation_result?: InvestigationContext | null
+  user_context?: Record<string, unknown> | null
+  persona?: import('../stores/practiceStore').CustomerPersona | null
+}
+
+export interface PracticeMessage {
+  id: string
+  role: 'user' | 'ai' | 'assistant' | 'system'
+  content: string
+  created_at: string
 }
 
 // Session list types
@@ -244,8 +259,13 @@ const api = {
   /**
    * 获取单个会话详情
    */
-  async getSession(sessionId: string): Promise<PracticeSessionDetail> {
-    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}`)
+  async getSession(sessionId: string, signal?: AbortSignal): Promise<PracticeSessionDetail> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}`, { signal })
+    return response.data
+  },
+
+  async getSessionMessages(sessionId: string, signal?: AbortSignal): Promise<PracticeMessage[]> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}/messages`, { signal })
     return response.data
   },
 

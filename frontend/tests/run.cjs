@@ -3,3 +3,4 @@ require('./auth.test.cjs')
 require('./websocket.test.cjs')
 
 require('./knowledge.test.cjs')
+require('./history.test.cjs')

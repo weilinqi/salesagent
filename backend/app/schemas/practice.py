@@ -80,6 +80,13 @@ class SessionResponse(BaseModel):
     started_at: Optional[datetime]
     ended_at: Optional[datetime]
     created_at: datetime
+    scenario: Optional[ScenarioResponse] = None
+    current_phase: Optional[str] = None
+    message_count: int = 0
+    customer_context: Optional[dict] = None
+    investigation_result: Optional[dict] = None
+    user_context: Optional[dict] = None
+    persona: Optional[dict] = None
 
     class Config:
         from_attributes = True

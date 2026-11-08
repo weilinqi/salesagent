@@ -21,6 +21,7 @@ from app.schemas.practice import (
     SessionCreate,
     SessionResponse,
     SessionCreateResponse,
+    MessageResponse,
     SessionListItem,
     SessionListResponse,
     DashboardStats,
@@ -238,7 +239,18 @@ async def get_session(session_id: UUID, db: Session = Depends(get_db)):
             detail="会话不存在"
         )
 
-    return session
+    response = SessionResponse.model_validate(session)
+    response.role_config = {key: value for key, value in (session.role_config or {}).items() if key != '__persona'}
+    response.persona = (session.role_config or {}).get('__persona')
+    return response
+
+
+@router.get('/sessions/{session_id}/messages', response_model=List[MessageResponse])
+async def get_session_messages(session_id: UUID, db: Session = Depends(get_db)):
+    """Owned conversation history; settings are available from session detail."""
+    return (db.query(PracticeMessage)
+            .filter(PracticeMessage.session_id == str(session_id))
+            .order_by(PracticeMessage.created_at, PracticeMessage.id).all())
 
 
 @router.post("/sessions/{session_id}/end")
