@@ -274,116 +274,8 @@ async def generate_persona_for_session(scenario_name: str, role_config: dict) ->
 async def generate_opening_message(scenario_name: str, scenario_id: str,
                                    role_config: dict,
                                    persona: Optional[dict] = None) -> str:
-    """Use LLM to generate a realistic first line for the customer."""
-    if persona and persona.get("name"):
-        system_prompt = f"""你扮演【{persona['name']}】，{persona.get('title', '')}@{persona.get('company', '')}。
-当前场景：{scenario_name}
-
-你的背景：
-{persona.get('background', '')}
-
-你最近在忙什么：
-{persona.get('current_situation', '')}
-
-你当前的痛点：
-{chr(10).join(['- ' + p for p in persona.get('pain_points', [])])}
-
-你的说话风格：
-{persona.get('speaking_style', '')}
-
-接触场景：
-{persona.get('scenario_context', '')}
-
-【任务】
-一个销售刚刚联系你/敲你办公室的门/打来电话/发来微信。
-你要说出你的第一句话。
-
-【要求】
-1. 绝对不要自我介绍"我是{persona['name']}"或"我是{scenario_name}场景的AI客户"
-2. 像真人接电话/被打扰时的反应
-3. 一句话即可，15-30字
-4. 符合你的说话风格
-5. 可以带情绪（忙/被打扰/有点兴趣/没兴趣）
-6. 给出具体的上下文暗示（如"正在忙""刚开完会""手头有项目"）
-7. 不要问"请问您想了解什么"——你是被联系的人，不是主动询问的人
-8. 不要说"你好请问有什么事"——太机械
-
-【示例风格（不要照抄）】
-- 正在忙被打扰："嗯...我现在在开会，你稍等一下，什么事？"
-- 略有兴趣："行你说吧，我现在有点时间。"
-- 警惕敷衍："喂？现在打电话过来？什么事？"
-- 直接打断："等下，什么事，我这边有点忙。"
-
-只输出你的第一句话。"""
-    else:
-        position = role_config.get("position_level", "middle")
-        personality = role_config.get("personality", "rational")
-        decision_style = role_config.get("decision_style", "value_oriented")
-        position_label = {
-            "junior": "初级客户经理", "middle": "中级采购经理", "senior": "高级总监"
-        }.get(position, "采购经理")
-        personality_label = {
-            "rational": "理性", "emotional": "感性", "hesitant": "犹豫", "decisive": "果断"
-        }.get(personality, "理性")
-        style_label = {
-            "price_oriented": "关注价格", "value_oriented": "关注价值",
-            "relationship_oriented": "看重关系", "risk_averse": "规避风险"
-        }.get(decision_style, "关注价值")
-        system_prompt = f"""你扮演一位{position_label}，性格{personality_label}，{style_label}。
-你正在和一位销售初次接触（电话或登门拜访）。
-
-要求：
-1. 绝对不要自我介绍"我是AI客户"或"我是模拟客户"
-2. 语气要符合{personality_label}的客户特点
-3. 一句话即可，15-30字
-4. 像真实场景：销售打来电话/上门时，你正在忙或被打扰
-5. 符合场景：{scenario_name}
-
-只输出客户那一句话，不要任何解释。"""
-
-    # 开场白 LLM 调用对当前模型不稳定（reasoning 模型总是把
-    # 思考过程写在回复里、且 max_tokens 一卡就把答案截掉）。
-    # 改用 persona × personality × industry 的多版本兜底池，
-    # 既快又不会"读起来像硬编码"。
-    # 如未来切到非 M-series 模型，再启用 LLM 调用。
-
-    personality = role_config.get("personality", "rational")
-    import random
-    industry_hint = ""
-    if persona and isinstance(persona, dict):
-        industry = (persona.get("industry") or persona.get("scenario_context") or "").strip()
-        if industry and len(industry) <= 12:
-            industry_hint = f"，{industry}"
-
-    pools = {
-        "rational": [
-            "我现在手头有个项目在选型，简单说一下你们能提供什么？",
-            "行，你说你们跟市面上其他方案相比有什么不同？",
-            "我对这类产品了解过一些，先讲讲你们最核心的优势。",
-            "正好在做明年规划，你说说能解决哪些具体问题？",
-        ],
-        "emotional": [
-            "嗯你好啊，对你这个挺感兴趣的，你说说看。",
-            "听着挺有意思的，先发点资料给我看看吧。",
-            "行呀，那你先介绍一下呗，我看看跟我们想的是不是一回事。",
-            "哎呀你来得正好，最近正好在琢磨这事，你说说。",
-        ],
-        "hesitant": [
-            "嗯...你好，我现在有点忙，要不你先发个资料过来？",
-            "这个...我得跟团队商量一下，要不你先讲讲大概？",
-            "我现在手头有点乱，你简单说两句，我回头细看。",
-            "行吧，那你就简单说说，我看合不合适。",
-        ],
-        "decisive": [
-            "直接说重点，什么产品，多少钱？",
-            "好，简单讲讲你的方案和报价，五分钟能说完吗？",
-            "别绕弯子，你们最擅长解决什么？",
-            "行，我时间有限，你直入主题。",
-        ],
-    }
-    pool = pools.get(personality, ["嗯，你好，什么事？"])
-    base = random.choice(pool)
-    return base + industry_hint
+    from app.services.conversation.customer_voice import opening
+    return opening(persona)
 
 
 # =============================================================================
@@ -810,7 +702,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # Send immediate placeholder so the UI has something to show.
     # Run through add_breath_tags so even the placeholder gets a natural emotion tag.
     # ------------------------------------------------------------------
-    placeholder_text = "嗯，你好，我这边手头有个项目在选型，刚开完会，你说说你们能提供什么。"
+    placeholder_text = "你好，请稍等，我正在准备与你交流。"
     print(f"[WS] DEBUG placeholder: personality={role_config.get('personality')!r}, role_config keys={list(role_config.keys())}")
     try:
         from app.services.conversation.handler import add_breath_tags_to_response
