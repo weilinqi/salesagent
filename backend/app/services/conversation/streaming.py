@@ -19,6 +19,7 @@ import sys
 import time
 import base64
 import httpx
+from app.services.llm.minimax_fallback import MiniMaxAPIError, credential_error
 from typing import AsyncIterator, List, Optional, Dict, Any, Callable, Awaitable
 
 # Windows CMD 默认 GBK 编码，遇到 emoji / 中日韩生僻字会 UnicodeEncodeError
@@ -649,6 +650,10 @@ async def stream_pipeline(
             error_message = "MiniMax 返回 429，当前额度或请求频率受限。请检查 Token Plan 额度后重试。"
         else:
             error_message = "AI 服务暂时无法生成回复，请稍后重试。"
+        if isinstance(e, MiniMaxAPIError) and credential_error(e):
+            error_message = "MiniMax 账户额度、请求限额或 key 权限受限，请检查模型账户。"
+            if e.backup_attempted:
+                error_message = "主 key 请求失败，备用 key 也不可用。" + error_message
         await websocket_send({
             "type": "ai_streaming_end",
             "id": msg_id,

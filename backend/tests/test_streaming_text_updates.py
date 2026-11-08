@@ -1,3 +1,4 @@
+from app.services.llm.minimax_fallback import MiniMaxAPIError
 """Offline regression tests for practice-chat text streaming."""
 import asyncio
 import contextlib
@@ -291,13 +292,13 @@ class StreamingTextUpdateTests(unittest.IsolatedAsyncioTestCase):
             "app.services.llm.minimax.httpx.AsyncClient",
             side_effect=lambda **kwargs: real_client(transport=transport, **kwargs),
         ):
-            with self.assertRaises(httpx.HTTPStatusError) as raised:
+            with self.assertRaises(MiniMaxAPIError) as raised:
                 async for _ in MiniMaxService(api_key="test-key").chat_stream(
                     [{"role": "user", "content": "hello"}]
                 ):
                     pass
 
-        self.assertEqual(raised.exception.response.status_code, 402)
+        self.assertEqual(raised.exception.http_status, 402)
 
     async def test_chat_stream_disables_thinking_for_low_latency(self):
         """The provider request must skip M3 thinking and cap short chat output."""

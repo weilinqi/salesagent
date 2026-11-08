@@ -20,6 +20,7 @@ from app.schemas.practice import (
     ScenarioListResponse,
     SessionCreate,
     SessionResponse,
+    SessionMessageItem,
     SessionCreateResponse,
     SessionListItem,
     SessionListResponse,
@@ -203,102 +204,62 @@ async def create_session(
 
 
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: UUID, db: Session = Depends(get_db)):
+async def get_session(session_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """获取会话详情"""
     session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
-    if not session:
+    if not session or session.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="会话不存在"
         )
 
-    # Get conversation context from session manager
-    from app.websocket.manager import session_manager
-    context = session_manager.get_context(str(session_id))
+    scenario = db.query(Scenario).filter(Scenario.id == str(session.scenario_id)).first()
+    message_count = db.query(PracticeMessage).filter(
+        PracticeMessage.session_id == str(session_id)
+    ).count()
 
-    # 如果 session 已结束（WS 断开），从 DB 持久化的 messages 重建 context
-    if not context:
-        db_messages = (
-            db.query(PracticeMessage)
-            .filter(PracticeMessage.session_id == str(session_id))
-            .order_by(PracticeMessage.created_at)
-            .all()
+    return SessionResponse(
+        id=session.id,
+        scenario_id=session.scenario_id,
+        user_id=session.user_id,
+        scenario_name=scenario.name if scenario else None,
+        role_config=session.role_config or {},
+        status=session.status,
+        current_phase=session.current_phase,
+        message_count=message_count,
+        websocket_url=f"/ws/practice/{session.id}",
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        created_at=session.created_at,
+    )
+
+
+@router.get("/sessions/{session_id}/messages", response_model=List[SessionMessageItem])
+async def get_session_messages(session_id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """获取会话的完整对话记录
+
+    供历史页展示上一次对话的内容，并让"继续练习"把记录还原到聊天界面。
+    归属校验由路由级 require_practice_access 依赖完成。
+    """
+    session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+    if not session or session.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    messages = db.query(PracticeMessage).filter(
+        PracticeMessage.session_id == str(session_id)
+    ).order_by(
+        PracticeMessage.created_at.asc(),
+        PracticeMessage.id.asc(),
+    ).all()
+
+    return [
+        SessionMessageItem(
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            created_at=message.created_at,
         )
-        context = [
-            {"role": m.role, "content": m.content} for m in db_messages
-        ]
-
-    if not context:
-        return {
-            "session_id": str(session_id),
-            "overall_score": 0,
-            "situation_score": 0,
-            "problem_score": 0,
-            "implication_score": 0,
-            "need_payoff_score": 0,
-            "key_strengths": [],
-            "areas_for_improvement": [],
-            "next_practice_focus": "暂无对话记录"
-        }
-
-    # Map "ai" to "assistant" for MiniMax API
-    for msg in context:
-        if msg.get("role") == "ai":
-            msg["role"] = "assistant"
-
-    # Call handler to generate SPIN evaluation
-    from app.services.conversation.handler import get_conversation_handler
-    handler = get_conversation_handler()
-
-    # Get customer type from session
-    role_config = session.role_config or {}
-    personality = role_config.get("personality", "decisive")
-    personality_map = {
-        "rational": "analytical",
-        "emotional": "expressive",
-        "hesitant": "amiable",
-        "decisive": "assertive"
-    }
-    customer_type = personality_map.get(personality, "assertive")
-
-    # Generate evaluation
-    evaluation = await handler.evaluate_conversation(context, customer_type)
-
-    # Parse evaluation result (simplified - in production would parse structured JSON)
-    try:
-        import re
-        situation_match = re.search(r'[Ss]ituation.*?(\d+)', evaluation)
-        problem_match = re.search(r'[Pp]roblem.*?(\d+)', evaluation)
-        implication_match = re.search(r'[Ii]mplication.*?(\d+)', evaluation)
-        need_payoff_match = re.search(r'need[- ]payoff.*?(\d+)', evaluation)
-
-        situation_score = int(situation_match.group(1)) if situation_match else 7
-        problem_score = int(problem_match.group(1)) if problem_match else 7
-        implication_score = int(implication_match.group(1)) if implication_match else 7
-        need_payoff_score = int(need_payoff_match.group(1)) if need_payoff_match else 7
-    except:
-        situation_score = 7
-        problem_score = 7
-        implication_score = 7
-        need_payoff_score = 7
-
-    overall_score = (situation_score + problem_score + implication_score + need_payoff_score) / 4 * 10
-
-    return {
-        "session_id": str(session_id),
-        "overall_score": round(overall_score, 1),
-        "situation_score": situation_score * 10,
-        "problem_score": problem_score * 10,
-        "implication_score": implication_score * 10,
-        "need_payoff_score": need_payoff_score * 10,
-        "key_strengths": [
-            "开场破冰自然，能快速建立信任"
-        ],
-        "areas_for_improvement": [
-            "需求挖掘深度可以加强"
-        ],
-        "next_practice_focus": "建议加强Implication（影响）阶段，多追问'这会对您造成什么影响？'"
-    }
+        for message in messages
+    ]
 
 
 @router.post("/sessions/{session_id}/end")

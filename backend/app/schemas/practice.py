@@ -74,11 +74,26 @@ class SessionResponse(BaseModel):
     """Session response schema"""
     id: UUID
     scenario_id: UUID
-    user_id: UUID
+    user_id: Optional[str] = None
+    scenario_name: Optional[str] = None
     role_config: dict
     status: str
+    current_phase: Optional[str] = None
+    message_count: int = 0
+    websocket_url: str = ""
     started_at: Optional[datetime]
     ended_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SessionMessageItem(BaseModel):
+    """A single persisted turn of a practice conversation."""
+    id: UUID
+    role: str
+    content: str
     created_at: datetime
 
     class Config:

@@ -11,14 +11,16 @@
  * Story: 1.2 语音对话与实时交互
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { usePracticeStore } from '../../stores/practiceStore'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { usePracticeStore, PracticeSession } from '../../stores/practiceStore'
 import { useWebSocket, StreamMessage, KnowledgeRef } from '../../hooks/useWebSocket'
 import { useAudioStream } from '../../hooks/useAudioStream'
 import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
 import SpinStageHint from '../../components/business/practice/SpinStageHint'
 import api, { RoleConfig } from '../../api/practice'
+import { toTranscriptMessages } from '../../utils/sessionHistory'
+import { getErrorMessage } from '../../utils/errorMessage'
 
 interface MessageItem {
   id: string
@@ -49,8 +51,18 @@ const PracticeChatPage = () => {
     currentSession,
     selectedScenario,
     selectedRoleConfig,
-    updatePersona
+    updatePersona,
+    updateSessionPhase,
+    resumeSession
   } = usePracticeStore()
+
+  // A session id in the URL means "continue this conversation" from the
+  // history page. Without it the page always starts a brand new session.
+  const [searchParams] = useSearchParams()
+  const resumeSessionId = searchParams.get('sessionId')
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [isResuming, setIsResuming] = useState(false)
+  const [resumeError, setResumeError] = useState<string | null>(null)
 
   const [messages_, setMessages_] = useState<MessageItem[]>([])
   const [isSending, setIsSending] = useState(false)
@@ -100,16 +112,66 @@ const PracticeChatPage = () => {
     return () => clearTimeout(timer)
   }, [])
   useEffect(() => {
-    if (hasCheckedSession && !currentSession?.id) {
+    if (hasCheckedSession && !currentSession?.id && !resumeSessionId && !isResuming) {
       navigate('/practice')
     }
-  }, [hasCheckedSession, currentSession, navigate])
+  }, [hasCheckedSession, currentSession, navigate, resumeSessionId, isResuming])
+
+  // Resume an earlier conversation: load the stored transcript, re-attach to
+  // the same session and keep talking instead of starting from zero.
+  useEffect(() => {
+    if (!resumeSessionId) return
+    let cancelled = false
+    const load = async () => {
+      setIsResuming(true)
+      setResumeError(null)
+      try {
+        const detail = await api.getSession(resumeSessionId)
+        if (cancelled) return
+        if ((detail.status || 'active') !== 'active') {
+          // The session is over - show the transcript instead of a dead chat.
+          navigate(`/practice/review?sessionId=${resumeSessionId}`, { replace: true })
+          return
+        }
+        const messages = await api.getSessionMessages(resumeSessionId)
+        if (cancelled) return
+        resumeSession({
+          id: detail.id,
+          scenario_id: detail.scenario_id,
+          scenario_name: detail.scenario_name ?? null,
+          status: 'active',
+          current_phase: (detail.current_phase || 'opening') as PracticeSession['current_phase'],
+          websocket_url: detail.websocket_url || `/ws/practice/${detail.id}`,
+          first_message: null,
+          persona: null,
+        })
+        setActiveSessionId(detail.id)
+        setMessages_(toTranscriptMessages(messages))
+      } catch (error: unknown) {
+        console.error('Failed to resume session:', error)
+        if (!cancelled) {
+          setResumeError(getErrorMessage(error, '无法继续该次练习'))
+        }
+      } finally {
+        if (!cancelled) setIsResuming(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [resumeSessionId, navigate, resumeSession])
+
+  // Normal flow: the session was just created by the practice page.
+  useEffect(() => {
+    if (!resumeSessionId && currentSession?.id) {
+      setActiveSessionId(currentSession.id)
+    }
+  }, [resumeSessionId, currentSession?.id])
 
   // Build WebSocket URL - 走 vite 代理（同页同源，自动跟随 vite.config.ts 的 target）
   // 这样切换后端端口只改一处；硬编码后端地址会绕过 Vite proxy
   const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const wsUrl = currentSession?.id && currentSession.id.length > 10
-    ? `${wsProtocol}//${window.location.host}/ws/practice/${currentSession.id}`
+  const wsUrl = activeSessionId && activeSessionId.length > 10
+    ? `${wsProtocol}//${window.location.host}/ws/practice/${activeSessionId}`
     : null
 
   const handleMessage = useCallback((wsMessage: StreamMessage) => {
@@ -145,6 +207,20 @@ const PracticeChatPage = () => {
     }
     if (wsMessage.type === 'user_message') {
       // User's own message - already added locally
+      return
+    }
+
+    // The backend confirmed that this connection continues an existing
+    // conversation: restore the persona and the phase, no new greeting.
+    if (wsMessage.type === 'session_resumed') {
+      const persona = wsMessage.persona
+      if (persona && persona.name) {
+        updatePersona(persona)
+      }
+      const phase = wsMessage.data?.current_phase as string | undefined
+      if (phase) {
+        updateSessionPhase(phase as PracticeSession['current_phase'])
+      }
       return
     }
 
@@ -289,7 +365,7 @@ const PracticeChatPage = () => {
     if (wsMessage.type === 'backchannel') {
       console.log('[Backchannel]', wsMessage.content)
     }
-  }, [playStoredAudio, updatePersona])
+  }, [playStoredAudio, updatePersona, updateSessionPhase])
 
   const handleVoiceAudio = useCallback((chunk: Uint8Array) => {
     if (dropVoiceAudioRef.current) return
@@ -439,7 +515,9 @@ const PracticeChatPage = () => {
             </svg>
           </button>
           <div>
-            <h1 className="font-semibold text-gray-900">{selectedScenario?.name || '对练中'}</h1>
+            <h1 className="font-semibold text-gray-900">
+              {selectedScenario?.name || currentSession?.scenario_name || '对练中'}
+            </h1>
             <p className="text-xs text-gray-500">
               {isConnected ? (
                 <span className="flex items-center gap-1">
@@ -492,6 +570,24 @@ const PracticeChatPage = () => {
           </div>
         ) : null}
       </header>
+
+      {resumeError && (
+        <div className="bg-warning/10 border-b border-warning/30 px-4 py-2 text-sm text-warning">
+          {resumeError}
+          <button
+            onClick={() => navigate('/history')}
+            className="ml-3 underline hover:no-underline"
+          >
+            返回练习历史
+          </button>
+        </div>
+      )}
+
+      {isResuming && (
+        <div className="bg-info/10 border-b border-info/30 px-4 py-2 text-sm text-gray-600">
+          正在载入上一次对话记录...
+        </div>
+      )}
 
       {/* 自由对话指示条（替代旧的硬性 5 阶段 SPIN 进度条） */}
       <div className="bg-white border-b border-gray-200 px-4 py-2">

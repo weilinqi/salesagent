@@ -55,6 +55,23 @@ export interface PracticeSessionContext {
 export interface PracticeSessionDetail {
   id: string
   scenario_id: string
+  scenario_name?: string | null
+  user_id?: string | null
+  role_config?: RoleConfig
+  status?: string
+  current_phase?: string | null
+  message_count?: number
+  websocket_url?: string
+  created_at?: string
+  ended_at?: string | null
+}
+
+/** A persisted turn of a practice conversation. */
+export interface SessionMessage {
+  id: string
+  role: string
+  content: string
+  created_at: string
 }
 
 // Session list types
@@ -218,6 +235,8 @@ const api = {
     page_size?: number
     status?: string
     scenario_type?: string
+    start_date?: string
+    end_date?: string
   }): Promise<SessionListResponse> {
     const response = await axios.get(`${API_BASE}/practice/sessions-list`, { params })
     return response.data
@@ -245,6 +264,14 @@ const api = {
   async getSession(sessionId: string): Promise<PracticeSessionDetail> {
     const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}`)
     return response.data
+  },
+
+  /**
+   * 获取会话的完整对话记录（按时间正序）
+   */
+  async getSessionMessages(sessionId: string): Promise<SessionMessage[]> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}/messages`)
+    return Array.isArray(response.data) ? response.data : []
   },
 
   /**

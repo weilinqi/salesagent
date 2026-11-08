@@ -2,6 +2,7 @@
  * LoginPage - User authentication page
  */
 import { useState } from 'react'
+import axios from 'axios'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -29,10 +30,11 @@ const LoginPage = () => {
     setError(null)
 
     try {
-      await login(formData.email, formData.password)
+      await login(formData.email.trim(), formData.password)
       navigate('/practice')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败')
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : undefined
+      setError(typeof detail === 'string' ? detail : '登录失败，请检查服务是否正常后重试。')
     } finally {
       setIsLoading(false)
     }
@@ -119,7 +121,7 @@ const LoginPage = () => {
         {/* Demo hint */}
         <div className="mt-6 p-4 bg-gray-100 rounded-lg text-center">
           <p className="text-sm text-gray-500">
-            演示模式：输入任意邮箱和密码即可登录
+            请使用已注册的邮箱和密码登录；首次使用请点击“立即注册”。
           </p>
         </div>
       </div>

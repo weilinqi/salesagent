@@ -116,8 +116,9 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
         max_instances=1,
     )
-    scheduler.start()
-    logger.info("[scheduler] APScheduler started: daily_brief_push @ 08:30 Asia/Shanghai")
+    if os.environ.get('ENABLE_SCHEDULER', 'true').lower() not in ('false', '0', 'no'):
+        scheduler.start()
+        logger.info("[scheduler] APScheduler started: daily_brief_push @ 08:30 Asia/Shanghai")
     # 在应用开始接收请求前完成知识链路预热，避免第一次对话承担模型、
     # ChromaDB 和知识数据的懒加载成本。失败不影响服务启动。
     async def _warmup_embedding():
@@ -147,7 +148,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"[warmup] knowledge retrieval skipped: {e}")
 
-    await _warmup_embedding()
+    warmup_enabled = os.environ.get('ENABLE_MODEL_WARMUP', 'true').lower() not in ('false', '0', 'no')
+    if warmup_enabled:
+        await _warmup_embedding()
 
     # 预热 whisper 模型：ASR 首次请求触发 2-3s 模型加载，挪到启动时。
     async def _warmup_whisper():
@@ -162,14 +165,18 @@ async def lifespan(app: FastAPI):
             logger.info("[warmup] faster_whisper importable")
         except Exception as e:
             logger.warning(f"[warmup] whisper warmup skipped: {e}")
-    asyncio.create_task(_warmup_whisper())
+    warmup_task = asyncio.create_task(_warmup_whisper()) if warmup_enabled else None
     # 打印已注册 job 列表便于排错
     for job in scheduler.get_jobs():
-        logger.info(f"[scheduler] job: id={job.id} next_run={job.next_run_time}")
+        logger.info(f"[scheduler] job: id={job.id} next_run={getattr(job, 'next_run_time', None)}")
     try:
         yield
     finally:
-        scheduler.shutdown(wait=False)
+        if warmup_task is not None:
+            warmup_task.cancel()
+            await asyncio.gather(warmup_task, return_exceptions=True)
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
@@ -846,45 +853,54 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
-    # Fire-and-forget persona + opening message (slow LLM)
-    # ------------------------------------------------------------------
-    asyncio.create_task(_init_persona_and_first_message(
-        websocket, session_id, scenario_name, scenario_id, role_config
-    ))
+    with SessionLocal() as history_db:
+        history_rows = history_db.query(PracticeMessage).filter(
+            PracticeMessage.session_id == session_id
+        ).order_by(PracticeMessage.created_at, PracticeMessage.id).all()
+        transcript = [(row.role, row.content) for row in history_rows if row.content]
+    if transcript and not session_manager.get_context(session_id):
+        for role, content in transcript:
+            session_manager.add_message(session_id, role, content)
+    if not transcript:
+        # ------------------------------------------------------------------
+        # Fire-and-forget persona + opening message (slow LLM)
+        # ------------------------------------------------------------------
+        asyncio.create_task(_init_persona_and_first_message(
+            websocket, session_id, scenario_name, scenario_id, role_config
+        ))
 
-    # ------------------------------------------------------------------
-    # Send immediate placeholder so the UI has something to show
-    # ------------------------------------------------------------------
-    # Send immediate placeholder so the UI has something to show.
-    # Run through add_breath_tags so even the placeholder gets a natural emotion tag.
-    # ------------------------------------------------------------------
-    placeholder_text = "嗯，你好，我这边手头有个项目在选型，刚开完会，你说说你们能提供什么。"
-    print(f"[WS] DEBUG placeholder: personality={role_config.get('personality')!r}, role_config keys={list(role_config.keys())}")
-    try:
-        from app.services.conversation.handler import add_breath_tags_to_response
-        personality_to_emotion = {
-            "rational": "neutral", "emotional": "happy",
-            "hesitant": "fearful", "decisive": "angry",
-        }
-        placeholder_emotion = personality_to_emotion.get(
-            role_config.get("personality", "rational"), "neutral"
-        )
-        print(f"[WS] DEBUG placeholder: emotion={placeholder_emotion}, text_len={len(placeholder_text)}")
-        placeholder_text = add_breath_tags_to_response(placeholder_text, placeholder_emotion)
-        print(f"[WS] DEBUG placeholder with tags: {placeholder_text}")
-    except Exception as e:
-        import traceback
-        print(f"[WS] DEBUG placeholder ERROR: {e}")
-        traceback.print_exc()
+        # ------------------------------------------------------------------
+        # Send immediate placeholder so the UI has something to show
+        # ------------------------------------------------------------------
+        # Send immediate placeholder so the UI has something to show.
+        # Run through add_breath_tags so even the placeholder gets a natural emotion tag.
+        # ------------------------------------------------------------------
+        placeholder_text = "嗯，你好，我这边手头有个项目在选型，刚开完会，你说说你们能提供什么。"
+        print(f"[WS] DEBUG placeholder: personality={role_config.get('personality')!r}, role_config keys={list(role_config.keys())}")
+        try:
+            from app.services.conversation.handler import add_breath_tags_to_response
+            personality_to_emotion = {
+                "rational": "neutral", "emotional": "happy",
+                "hesitant": "fearful", "decisive": "angry",
+            }
+            placeholder_emotion = personality_to_emotion.get(
+                role_config.get("personality", "rational"), "neutral"
+            )
+            print(f"[WS] DEBUG placeholder: emotion={placeholder_emotion}, text_len={len(placeholder_text)}")
+            placeholder_text = add_breath_tags_to_response(placeholder_text, placeholder_emotion)
+            print(f"[WS] DEBUG placeholder with tags: {placeholder_text}")
+        except Exception as e:
+            import traceback
+            print(f"[WS] DEBUG placeholder ERROR: {e}")
+            traceback.print_exc()
 
-    await safe_send_message(session_id, {
-        "type": "ai_message",
-        "id": f"msg-{session_id}-init",
-        "content": placeholder_text,
-        "audio_data": "",
-        "timestamp": datetime.utcnow().isoformat()
-    })
+        await safe_send_message(session_id, {
+            "type": "ai_message",
+            "id": f"msg-{session_id}-init",
+            "content": placeholder_text,
+            "audio_data": "",
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
     # ------------------------------------------------------------------
     # Receive loop (single, well-defined)

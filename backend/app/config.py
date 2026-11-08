@@ -4,17 +4,6 @@ SalesAgent Application Configuration
 import os
 from pathlib import Path
 
-# Load .env file manually FIRST before any other imports
-# This ensures os.environ has the values when pydantic_settings initializes
-_env_path = Path(__file__).parent.parent / ".env"
-if _env_path.exists():
-    with open(_env_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                os.environ[key] = value
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -23,7 +12,10 @@ class Settings(BaseSettings):
     """Application settings"""
     model_config = SettingsConfigDict(
         case_sensitive=True,
-        extra="ignore"
+        extra="ignore",
+        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_file_encoding="utf-8",
+        hide_input_in_errors=True
     )
 
     # App settings
@@ -43,6 +35,11 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # MiniMax LLM
+    MINIMAX_TERTIARY_API_KEY: Optional[str] = None
+    MINIMAX_FALLBACK_API_KEY: Optional[str] = None
+    AUDIO_DEBUG_ENABLED: bool = False
+    AUDIO_DEBUG_RETENTION_HOURS: int = 24
+    MINIMAX_USE_PROXY: bool = False
     MINIMAX_API_KEY: Optional[str] = None
     MINIMAX_BASE_URL: str = "https://api.minimaxi.com/v1"
 

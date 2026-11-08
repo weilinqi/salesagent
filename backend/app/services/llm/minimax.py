@@ -6,6 +6,11 @@ import base64
 import json
 from typing import Optional, AsyncIterator
 import httpx
+from copy import copy
+from .minimax_fallback import (
+    MiniMaxAPIError, ReplayableAudio, backup_for, check_http_response,
+    credential_error, key_fallback, raise_api_error, stream_key_fallback,
+)
 
 
 class MiniMaxService:
@@ -14,7 +19,9 @@ class MiniMaxService:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        group_id: Optional[str] = None
+        group_id: Optional[str] = None,
+        fallback_api_key: Optional[str] = None,
+        tertiary_api_key: Optional[str] = None,
     ):
         """
         Initialize MiniMax service.
@@ -28,12 +35,35 @@ class MiniMaxService:
         self.api_key = api_key or settings.MINIMAX_API_KEY or os.getenv("MINIMAX_API_KEY", "")
         self.group_id = group_id or os.getenv("MINIMAX_GROUP_ID", "")
         self.base_url = "https://api.minimaxi.com/v1"
+        self.use_proxy = settings.MINIMAX_USE_PROXY
+        # Explicit credentials are isolated unless their caller explicitly supplies a backup.
+        self.fallback_api_key = fallback_api_key if fallback_api_key is not None else (
+            getattr(settings, 'MINIMAX_FALLBACK_API_KEY', None) if api_key is None else None
+        )
 
+        self.tertiary_api_key = tertiary_api_key if tertiary_api_key is not None else (
+            getattr(settings, 'MINIMAX_TERTIARY_API_KEY', None) if api_key is None else None
+        )
         if not self.api_key:
             print("Warning: MINIMAX_API_KEY not set")
 
     # ==================== TTS (Text-to-Speech) ====================
 
+    def _fallback_service(self):
+        # Each clone consumes one distinct credential; the original is unchanged.
+        remaining = []
+        for key in (self.fallback_api_key, self.tertiary_api_key):
+            if key and key != self.api_key and key not in remaining:
+                remaining.append(key)
+        if not remaining:
+            return None
+        backup = copy(self)
+        backup.api_key = remaining[0]
+        backup.fallback_api_key = remaining[1] if len(remaining) > 1 else None
+        backup.tertiary_api_key = None
+        return backup
+
+    @key_fallback
     async def text_to_speech(
         self,
         text: str,
@@ -73,7 +103,7 @@ class MiniMaxService:
 
         url = f"{self.base_url}/t2a_v2"
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=self.use_proxy) as client:
             response = await client.post(
                 url,
                 headers={
@@ -84,7 +114,7 @@ class MiniMaxService:
                     "model": model,
                     "text": text,
                     "stream": False,
-                    "output_format": "url",
+                    "output_format": "hex",
                     "voice_setting": {
                         "voice_id": voice,
                         "speed": int(speed),
@@ -102,19 +132,21 @@ class MiniMaxService:
                 }
             )
 
+            await check_http_response(response)
             if response.status_code == 200:
                 data = response.json()
-                audio_url = data.get("data", {}).get("audio", "")
-                if audio_url:
-                    # Download audio from URL using a new client
-                    async with httpx.AsyncClient(timeout=60.0) as download_client:
-                        audio_resp = await download_client.get(audio_url)
-                        if audio_resp.status_code == 200:
-                            return audio_resp.content
-                raise Exception("No audio URL in response")
+                raise_api_error(data)
+                audio_hex = (data.get("data") or {}).get("audio", "")
+                if not audio_hex:
+                    raise RuntimeError("MiniMax TTS returned no audio")
+                try:
+                    return bytes.fromhex(audio_hex)
+                except (ValueError, TypeError) as exc:
+                    raise RuntimeError("MiniMax TTS returned invalid audio") from exc
             else:
-                raise Exception(f"TTS API error: {response.status_code} - {response.text}")
+                raise MiniMaxAPIError(http_status=response.status_code)
 
+    @stream_key_fallback
     async def text_to_speech_stream(
         self,
         text: str,
@@ -145,14 +177,13 @@ class MiniMaxService:
         headers = {"Authorization": f"Bearer {self.api_key}"}
 
         ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
 
-        # websockets 14+ renamed this argument to additional_headers.
-        ws_cm = websockets.connect(url, additional_headers=headers, ssl=ssl_context)
+        # websockets 16 uses additional_headers; TLS certificate checks remain enabled.
+        ws_cm = websockets.connect(url, additional_headers=headers, ssl=ssl_context, proxy=True if self.use_proxy else None)
         async with ws_cm as ws:
             # Wait for connection confirmation
             conn_resp = json.loads(await ws.recv())
+            raise_api_error(conn_resp)
             if conn_resp.get("event") != "connected_success":
                 raise Exception("WebSocket connection failed")
 
@@ -177,8 +208,9 @@ class MiniMaxService:
 
             # Wait for task_started confirmation
             task_resp = json.loads(await ws.recv())
+            raise_api_error(task_resp)
             if task_resp.get("event") != "task_started":
-                raise Exception(f"Task start failed: {task_resp}")
+                raise RuntimeError("MiniMax TTS task did not start")
 
             # Send text for synthesis
             await ws.send(json.dumps({
@@ -190,6 +222,7 @@ class MiniMaxService:
             while True:
                 try:
                     response = json.loads(await ws.recv())
+                    raise_api_error(response)
 
                     if "data" in response and "audio" in response["data"]:
                         audio_hex = response["data"]["audio"]
@@ -200,7 +233,7 @@ class MiniMaxService:
                                 on_chunk(audio_bytes)
                             yield audio_bytes
 
-                    if response.get("is_final"):
+                    if response.get("is_final") or response.get('event') == 'task_finished':
                         break
 
                 except websockets.exceptions.ConnectionClosed:
@@ -263,6 +296,7 @@ class MiniMaxService:
 
     # ==================== ASR (Speech-to-Text) ====================
 
+    @key_fallback
     async def speech_to_text(
         self,
         audio_data: bytes,
@@ -306,7 +340,7 @@ class MiniMaxService:
             "transcript_format": transcript_format
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, trust_env=self.use_proxy) as client:
             response = await client.post(
                 url,
                 headers={
@@ -316,14 +350,17 @@ class MiniMaxService:
                 json=payload
             )
 
+            await check_http_response(response)
             if response.status_code == 200:
                 data = response.json()
+                raise_api_error(data)
                 return data.get("text", "")
             else:
-                raise Exception(f"ASR API error: {response.status_code} - {response.text}")
+                raise MiniMaxAPIError(http_status=response.status_code)
 
     # ==================== Cloud ASR via Realtime API ====================
 
+    @key_fallback
     async def speech_to_text_realtime(
         self,
         audio_data: bytes,
@@ -360,40 +397,13 @@ class MiniMaxService:
             "audio/m4a": ".m4a",
         }
         ext = ext_map.get(audio_mime.split(";")[0].strip().lower(), ".webm")
-        src_path = tempfile.mktemp(suffix=ext)
-        with open(src_path, "wb") as f:
-            f.write(audio_data)
-        pcm_path = src_path + ".pcm"
-        try:
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-i", src_path,
-                    "-ar", "24000", "-ac", "1",
-                    "-f", "s16le", pcm_path,
-                ],
-                check=True, capture_output=True, timeout=30,
-            )
-        except Exception as ffmpeg_err:
-            print(f"[ASR-Realtime] ffmpeg convert failed: {ffmpeg_err}")
-            try:
-                os.unlink(src_path)
-            except Exception:
-                pass
+        from app.services.audio.files import convert_audio_to_pcm
+        pcm_bytes = await convert_audio_to_pcm(audio_data, audio_mime)
+        if not pcm_bytes:
             return ""
-
-        with open(pcm_path, "rb") as f:
-            pcm_bytes = f.read()
-        try:
-            os.unlink(src_path)
-            os.unlink(pcm_path)
-        except Exception:
-            pass
 
         # Step 2-5: WS to Realtime API
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
 
         url = "wss://api.minimaxi.com/ws/v1/realtime"
         # Strong prompt that suppresses greetings and explanations
@@ -408,9 +418,10 @@ class MiniMaxService:
                 url,
                 additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
+                proxy=True if self.use_proxy else None,
                 max_size=10 * 1024 * 1024,
             ) as ws:
-                await asyncio.wait_for(ws.recv(), timeout=10)  # session.created
+                raise_api_error(json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))  # session.created
 
                 await ws.send(json.dumps({
                     "type": "session.update",
@@ -421,7 +432,7 @@ class MiniMaxService:
                         "instructions": instruction,
                     },
                 }))
-                await asyncio.wait_for(ws.recv(), timeout=10)  # session.updated
+                raise_api_error(json.loads(await asyncio.wait_for(ws.recv(), timeout=10)))  # session.updated
 
                 # Stream audio in 100ms chunks
                 chunk_size = 4800
@@ -446,6 +457,7 @@ class MiniMaxService:
                 for _ in range(60):
                     msg = await asyncio.wait_for(ws.recv(), timeout=15.0)
                     data = json.loads(msg)
+                    raise_api_error(data)
                     etype = data.get("type", "?")
                     if etype == "response.text.delta":
                         collected += data.get("delta", "")
@@ -499,7 +511,9 @@ class MiniMaxService:
                 return result
 
         except Exception as e:
-            print(f"[ASR-Realtime] WS error: {e}")
+            if credential_error(e):
+                raise
+            print(f"[ASR-Realtime] WS error: {type(e).__name__}")
             return ""
 
     async def speech_to_text_realtime_stream(
@@ -523,8 +537,6 @@ class MiniMaxService:
         import websockets
 
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
 
         url = "wss://api.minimaxi.com/ws/v1/realtime"
         instruction = session_instruction or (
@@ -537,6 +549,7 @@ class MiniMaxService:
                 url,
                 additional_headers={"Authorization": f"Bearer {self.api_key}"},
                 ssl=ssl_ctx,
+                proxy=True if self.use_proxy else None,
                 max_size=10 * 1024 * 1024,
             ) as ws:
                 await asyncio.wait_for(ws.recv(), timeout=10)  # session.created
@@ -647,8 +660,6 @@ class MiniMaxService:
 
         # Make sure hf-mirror is the source (Windows SSL workaround).
         os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-        _orig_ctx = ssl._create_default_https_context
-        ssl._create_default_https_context = ssl._create_unverified_context
 
         # faster-whisper / ffmpeg need a real file. Write to a temp file with
         # the right extension so the decoder picks the right format.
@@ -667,16 +678,12 @@ class MiniMaxService:
         # Load model once and cache on the instance. Use 'small' for
         # significantly better Chinese accuracy. 'base' makes too many
         # Chinese character errors on browser-recorded audio.
-        try:
-            if not hasattr(self, "_whisper_model") or self._whisper_model is None:
-                print("[ASR-Local] Loading faster-whisper 'small' model...")
-                self._whisper_model = WhisperModel(
-                    "small", device="cpu", compute_type="int8"
-                )
-                print("[ASR-Local] Model ready.")
-            model = self._whisper_model
-        finally:
-            ssl._create_default_https_context = _orig_ctx
+        if not hasattr(self, "_whisper_model") or self._whisper_model is None:
+            print("[ASR-Local] Loading faster-whisper 'small' model...")
+            self._whisper_model = await asyncio.to_thread(
+                WhisperModel, "small", device="cpu", compute_type="int8"
+            )
+        model = self._whisper_model
 
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             tmp.write(audio_data)
@@ -695,7 +702,8 @@ class MiniMaxService:
         # NOTE: avoid silenceremove here — browser recordings of normal
         # speech through speakers are often below -40dB and the filter
         # would wipe them out.
-        wav_path = tmp_path + ".wav"
+        processed_path = tmp_path + ".wav"
+        wav_path = processed_path
         try:
             subprocess.run(
                 [
@@ -711,17 +719,16 @@ class MiniMaxService:
             print(f"[ASR-Local] ffmpeg preprocess failed: {ffmpeg_err}, falling back to raw input")
             wav_path = tmp_path
 
-        # Keep the last audio file for inspection.
+        # Diagnostic recording retention is explicit and disabled by default.
         try:
-            import shutil
-            debug_dir = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                "data", "asr_debug"
-            )
-            os.makedirs(debug_dir, exist_ok=True)
-            shutil.copy(wav_path, os.path.join(debug_dir, f"last_user_audio_processed.wav"))
-        except Exception as e:
-            print(f"[ASR-Local] debug save failed: {e}")
+            from pathlib import Path
+            from app.config import settings
+            from app.services.audio.files import retain_debug_audio
+            retain_debug_audio(Path(wav_path), enabled=settings.AUDIO_DEBUG_ENABLED,
+                directory=Path(__file__).resolve().parents[2] / "data" / "asr_debug",
+                retention_hours=settings.AUDIO_DEBUG_RETENTION_HOURS)
+        except OSError:
+            print("[ASR-Local] diagnostic retention failed")
 
         try:
             # Run transcription in a thread so we don't block the event loop
@@ -764,13 +771,14 @@ class MiniMaxService:
             except Exception:
                 pass
             try:
-                if wav_path != tmp_path:
-                    os.unlink(wav_path)
+                if os.path.exists(processed_path):
+                    os.unlink(processed_path)
             except Exception:
                 pass
 
     # ==================== LLM (M2.7) ====================
 
+    @key_fallback
     async def chat(
         self,
         messages: list,
@@ -825,7 +833,7 @@ class MiniMaxService:
         if tools:
             payload["tools"] = tools
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, trust_env=self.use_proxy) as client:
             response = await client.post(
                 url,
                 headers={
@@ -835,8 +843,10 @@ class MiniMaxService:
                 json=payload
             )
 
+            await check_http_response(response)
             if response.status_code == 200:
                 data = response.json()
+                raise_api_error(data)
                 choices = data.get("choices", [])
                 if choices:
                     message = choices[0].get("message", {})
@@ -849,8 +859,9 @@ class MiniMaxService:
                     return message.get("content", "")
                 return ""
             else:
-                raise Exception(f"LLM API error: {response.status_code} - {response.text}")
+                raise MiniMaxAPIError(http_status=response.status_code)
 
+    @stream_key_fallback
     async def chat_stream(
         self,
         messages: list,
@@ -897,7 +908,7 @@ class MiniMaxService:
         if model == "MiniMax-M3":
             payload["thinking"] = {"type": "disabled"}
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, trust_env=self.use_proxy) as client:
             async with client.stream(
                 "POST",
                 url,
@@ -907,13 +918,14 @@ class MiniMaxService:
                 },
                 json=payload
             ) as response:
-                response.raise_for_status()
+                await check_http_response(response)
                 async for line in response.aiter_lines():
                     if line.startswith("data:"):
                         data_str = line[5:].strip()
                         if data_str:
                             try:
                                 data = json.loads(data_str)
+                                raise_api_error(data)
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -923,9 +935,10 @@ class MiniMaxService:
                                     content = delta.get("content", "")
                                     if content:
                                         yield content
-                            except:
+                            except json.JSONDecodeError:
                                 continue
 
+    @stream_key_fallback
     async def chat_stream_with_tools(
         self,
         messages: list,
@@ -978,7 +991,7 @@ class MiniMaxService:
 
         tool_calls_buffer = []
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, trust_env=self.use_proxy) as client:
             async with client.stream(
                 "POST",
                 url,
@@ -988,12 +1001,14 @@ class MiniMaxService:
                 },
                 json=payload
             ) as response:
+                await check_http_response(response)
                 async for line in response.aiter_lines():
                     if line.startswith("data:"):
                         data_str = line[5:].strip()
                         if data_str:
                             try:
                                 data = json.loads(data_str)
+                                raise_api_error(data)
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -1010,7 +1025,7 @@ class MiniMaxService:
                                     content = delta.get("content", "")
                                     if content:
                                         yield content
-                            except:
+                            except json.JSONDecodeError:
                                 continue
 
                 # After stream ends, if we have tool calls, yield them
@@ -1039,7 +1054,7 @@ class MiniMaxService:
 
         url = f"{self.base_url}/e_search"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=self.use_proxy) as client:
             response = await client.post(
                 url,
                 headers={
@@ -1103,6 +1118,45 @@ class MiniMaxService:
         audio_output = await self.text_to_speech(response_text, voice=voice_id)
 
     async def realtime_voice_chat(
+        self, pcm_chunks_source, on_text_delta, on_audio_delta,
+        voice: str = "male-qn-qingse",
+        system_instruction: str = "你扮演客户，简短回复1-2句话。",
+    ) -> str:
+        replay = ReplayableAudio(pcm_chunks_source)
+        emitted = False
+
+        async def text_callback(text):
+            nonlocal emitted
+            emitted = True
+            await on_text_delta(text)
+
+        async def audio_callback(audio):
+            nonlocal emitted
+            emitted = True
+            await on_audio_delta(audio)
+
+        current = self
+        attempts = 0
+        try:
+            while True:
+                attempts += 1
+                try:
+                    return await current._realtime_voice_chat_once(
+                        replay.iterate(), text_callback, audio_callback, voice, system_instruction,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, MiniMaxAPIError):
+                        exc.backup_attempted = attempts > 1
+                    if emitted or not replay.can_replay:
+                        raise
+                    backup = backup_for(current, exc)
+                    if backup is None:
+                        raise
+                    current = backup
+        finally:
+            await replay.close()
+
+    async def _realtime_voice_chat_once(
         self,
         pcm_chunks_source,  # async iterator yielding 24kHz mono PCM bytes (16-bit LE)
         on_text_delta,       # async callable(str) for each text partial
@@ -1135,13 +1189,12 @@ class MiniMaxService:
         import websockets
 
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
 
         ws_cm = websockets.connect(
             'wss://api.minimaxi.com/ws/v1/realtime',
             additional_headers={'Authorization': f'Bearer {self.api_key}'},
             ssl=ssl_ctx,
+            proxy=True if self.use_proxy else None,
         )
 
         full_text = ""
@@ -1150,6 +1203,7 @@ class MiniMaxService:
                 # 等 session.created
                 msg = await asyncio.wait_for(ws.recv(), 10.0)
                 ev = json.loads(msg)
+                raise_api_error(ev)
                 if ev.get("type") != "session.created":
                     print(f"[Realtime] unexpected first event: {ev.get('type')}")
 
@@ -1170,6 +1224,7 @@ class MiniMaxService:
                     },
                 }))
                 msg = await asyncio.wait_for(ws.recv(), 10.0)  # session.updated
+                raise_api_error(json.loads(msg))
 
                 # 后台：持续推 audio
                 async def _audio_feeder():
@@ -1197,6 +1252,7 @@ class MiniMaxService:
                     while True:
                         msg = await asyncio.wait_for(ws.recv(), 60.0)
                         data = json.loads(msg)
+                        raise_api_error(data)
                         etype = data.get("type", "")
                         if etype == "response.text.delta":
                             delta = data.get("delta", "")
@@ -1219,8 +1275,7 @@ class MiniMaxService:
                         elif etype == "response.done":
                             break
                         elif etype == "error":
-                            print(f"[Realtime] error: {data.get('error')}")
-                            break
+                            raise MiniMaxAPIError()
                         # input_audio_buffer.* events (VAD) 忽略
                 except asyncio.TimeoutError:
                     print("[Realtime] recv timeout, finalizing")
@@ -1230,9 +1285,8 @@ class MiniMaxService:
                         await feeder_task
                     except (asyncio.CancelledError, Exception):
                         pass
-            except Exception as e:
-                print(f"[Realtime] error: {e}")
-                import traceback; traceback.print_exc()
+            except Exception:
+                raise
             finally:
                 try:
                     await ws.close()

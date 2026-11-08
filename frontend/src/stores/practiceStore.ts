@@ -33,9 +33,10 @@ export interface CustomerPersona {
 }
 
 // Session type
-interface PracticeSession {
+export interface PracticeSession {
   id: string
   scenario_id: string
+  scenario_name?: string | null
   status: 'preparing' | 'active' | 'completed'
   current_phase: 'opening' | 'discovery' | 'needs' | 'proposal' | 'closing'
   websocket_url: string | null
@@ -72,6 +73,8 @@ interface PracticeState {
   startSession: (spinContext?: PracticeSessionContext) => Promise<void>
   endSession: () => Promise<void>
   resetSession: () => void
+  /** Re-attach the chat page to a session that was started earlier. */
+  resumeSession: (session: PracticeSession) => void
 
   // Chat actions
   addMessage: (message: Omit<MessageItem, 'id' | 'timestamp'>) => void
@@ -218,6 +221,15 @@ export const usePracticeStore = create<PracticeState>()(
       messages: [],
       phaseSummaries: []
     })
+  },
+
+  resumeSession: (session) => {
+    set({
+      currentSession: session,
+      messages: [],
+      phaseSummaries: []
+    })
+    savePersistedSession(session)
   },
 
   // Chat actions

@@ -15,6 +15,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import ScoreChart from '../../components/business/practice/ScoreChart'
 import api from '../../api/practice'
 import { getErrorMessage } from '../../utils/errorMessage'
+import { formatTranscriptTime, toTranscriptMessages, TranscriptMessage } from '../../utils/sessionHistory'
 
 interface StageDetail {
   quote?: string
@@ -52,6 +53,33 @@ interface PracticeReviewPageProps {
   sessionId?: string
 }
 
+const TranscriptList = ({ messages }: { messages: TranscriptMessage[] }) => {
+  if (messages.length === 0) {
+    return <p className="text-sm text-gray-500">这次练习没有留下对话记录。</p>
+  }
+  return (
+    <div className="space-y-3">
+      {messages.map(message => (
+        <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+          <div className={`max-w-2xl rounded-lg px-4 py-2 text-sm whitespace-pre-wrap ${
+            message.type === 'user'
+              ? 'bg-primary text-white'
+              : message.type === 'ai'
+                ? 'bg-gray-100 text-gray-900'
+                : 'bg-gray-50 text-gray-500'
+          }`}>
+            <p>{message.content}</p>
+            <p className={`text-xs mt-1 ${message.type === 'user' ? 'text-white/70' : 'text-gray-400'}`}>
+              {message.type === 'user' ? '我' : message.type === 'ai' ? 'AI客户' : '系统'}
+              {formatTranscriptTime(message.timestamp) ? ` · ${formatTranscriptTime(message.timestamp)}` : ''}
+            </p>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 const PracticeReviewPage = ({ sessionId: propSessionId }: PracticeReviewPageProps) => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -62,6 +90,7 @@ const PracticeReviewPage = ({ sessionId: propSessionId }: PracticeReviewPageProp
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'strengths' | 'improvements'>('strengths')
+  const [transcript, setTranscript] = useState<TranscriptMessage[]>([])
 
   useEffect(() => {
     const loadReview = async () => {
@@ -75,7 +104,31 @@ const PracticeReviewPage = ({ sessionId: propSessionId }: PracticeReviewPageProp
       }
 
       try {
-        const summary = await api.getSessionSummary(sessionId)
+        const [summaryResult, messagesResult] = await Promise.allSettled([
+          api.getSessionSummary(sessionId),
+          api.getSessionMessages(sessionId).then(messages => {
+            setTranscript(toTranscriptMessages(messages))
+            setIsLoading(false)
+            return messages
+          }),
+        ])
+
+        if (messagesResult.status === 'fulfilled') {
+          setTranscript(toTranscriptMessages(messagesResult.value))
+        } else {
+          console.error('Failed to load session transcript:', messagesResult.reason)
+        }
+
+        if (summaryResult.status === 'rejected') {
+          // A session without a generated report still owns its transcript.
+          // Showing the conversation is more useful than an empty error page.
+          console.error('Failed to load session summary:', summaryResult.reason)
+          setReviewData(null)
+          setLoadError(null)
+          return
+        }
+
+        const summary = summaryResult.value
         const extraScores = summary as typeof summary & SummaryExtras
         setReviewData({
           session_id: summary.session_id,
@@ -135,11 +188,11 @@ const PracticeReviewPage = ({ sessionId: propSessionId }: PracticeReviewPageProp
     )
   }
 
-  if (loadError || !reviewData) {
+  if (loadError) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="bg-white rounded-xl p-8 shadow-sm text-center max-w-md">
-          <p className="text-red-600 mb-4">{loadError || '复盘数据不存在'}</p>
+          <p className="text-red-600 mb-4">{loadError}</p>
           <div className="flex gap-2 justify-center">
             <button
               onClick={() => window.location.reload()}
@@ -161,13 +214,35 @@ const PracticeReviewPage = ({ sessionId: propSessionId }: PracticeReviewPageProp
 
   if (!reviewData) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-gray-500">暂无复盘数据</p>
-          <button onClick={() => navigate('/practice')} className="mt-4 text-primary hover:underline">
-            返回对练
-          </button>
-        </div>
+      <div className="min-h-screen bg-gray-50">
+        <header className="bg-white shadow-sm">
+          <div className="max-w-4xl mx-auto px-4 py-4">
+            <h1 className="text-2xl font-bold text-gray-900">练习记录</h1>
+            <p className="text-sm text-gray-500 mt-1">这次练习还没有生成复盘报告，下面是对话记录。</p>
+          </div>
+        </header>
+        <main className="max-w-4xl mx-auto px-4 py-6 space-y-4">
+          <div className="bg-white rounded-xl shadow-sm p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-4">
+              对话记录 ({transcript.length})
+            </h2>
+            <TranscriptList messages={transcript} />
+          </div>
+          <div className="flex gap-4">
+            <button
+              onClick={() => navigate('/history')}
+              className="flex-1 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 font-medium"
+            >
+              返回练习历史
+            </button>
+            <button
+              onClick={handlePracticeAgain}
+              className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
+            >
+              再练一次
+            </button>
+          </div>
+        </main>
       </div>
     )
   }
@@ -318,6 +393,14 @@ const PracticeReviewPage = ({ sessionId: propSessionId }: PracticeReviewPageProp
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Conversation Transcript */}
+        <div className="bg-white rounded-xl shadow-sm p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">
+            对话记录 ({transcript.length})
+          </h2>
+          <TranscriptList messages={transcript} />
         </div>
 
         {/* Next Practice Focus */}
