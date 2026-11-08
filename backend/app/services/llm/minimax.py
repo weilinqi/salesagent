@@ -21,6 +21,7 @@ class MiniMaxService:
         api_key: Optional[str] = None,
         group_id: Optional[str] = None,
         fallback_api_key: Optional[str] = None,
+        tertiary_api_key: Optional[str] = None,
     ):
         """
         Initialize MiniMax service.
@@ -40,17 +41,26 @@ class MiniMaxService:
             getattr(settings, 'MINIMAX_FALLBACK_API_KEY', None) if api_key is None else None
         )
 
+        self.tertiary_api_key = tertiary_api_key if tertiary_api_key is not None else (
+            getattr(settings, 'MINIMAX_TERTIARY_API_KEY', None) if api_key is None else None
+        )
         if not self.api_key:
             print("Warning: MINIMAX_API_KEY not set")
 
     # ==================== TTS (Text-to-Speech) ====================
 
     def _fallback_service(self):
-        if not self.fallback_api_key or self.fallback_api_key == self.api_key:
+        # Each clone consumes one distinct credential; the original is unchanged.
+        remaining = []
+        for key in (self.fallback_api_key, self.tertiary_api_key):
+            if key and key != self.api_key and key not in remaining:
+                remaining.append(key)
+        if not remaining:
             return None
         backup = copy(self)
-        backup.api_key = self.fallback_api_key
-        backup.fallback_api_key = None
+        backup.api_key = remaining[0]
+        backup.fallback_api_key = remaining[1] if len(remaining) > 1 else None
+        backup.tertiary_api_key = None
         return backup
 
     @key_fallback
@@ -1125,20 +1135,24 @@ class MiniMaxService:
             emitted = True
             await on_audio_delta(audio)
 
+        current = self
+        attempts = 0
         try:
-            try:
-                return await self._realtime_voice_chat_once(
-                    replay.iterate(), text_callback, audio_callback, voice, system_instruction,
-                )
-            except Exception as exc:
-                if emitted or not replay.can_replay:
-                    raise
-                backup = backup_for(self, exc)
-                if backup is None:
-                    raise
-            return await backup._realtime_voice_chat_once(
-                replay.iterate(), text_callback, audio_callback, voice, system_instruction,
-            )
+            while True:
+                attempts += 1
+                try:
+                    return await current._realtime_voice_chat_once(
+                        replay.iterate(), text_callback, audio_callback, voice, system_instruction,
+                    )
+                except Exception as exc:
+                    if isinstance(exc, MiniMaxAPIError):
+                        exc.backup_attempted = attempts > 1
+                    if emitted or not replay.can_replay:
+                        raise
+                    backup = backup_for(current, exc)
+                    if backup is None:
+                        raise
+                    current = backup
         finally:
             await replay.close()
 
