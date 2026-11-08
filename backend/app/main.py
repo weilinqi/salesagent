@@ -773,7 +773,8 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                   if protocol.startswith("bearer.")]
         token = tokens[0] if len(tokens) == 1 else None
     origin = websocket.headers.get("origin")
-    if origin and origin not in settings.CORS_ORIGINS:
+    from app.core.websocket_origin import allowed_websocket_origin
+    if origin and not allowed_websocket_origin(origin, settings.CORS_ORIGINS, settings.ENVIRONMENT):
         await websocket.close(code=1008, reason="Origin not allowed")
         return
     user_id = get_user_id_from_token(token) if token else None

@@ -1,5 +1,5 @@
 import os,unittest,tempfile,pathlib,asyncio,uuid
-from unittest.mock import patch
+from unittest.mock import patch,AsyncMock
 os.environ.setdefault('DATABASE_URL','sqlite:///:memory:')
 os.environ.setdefault('SECRET_KEY','revision-two-test-only-secret-longer-than-thirty-two')
 from fastapi import FastAPI
@@ -71,7 +71,11 @@ class PracticePermissionsTests(unittest.TestCase):
   self.assertEqual(response.status_code,200,response.text)
   self.assertEqual([row['id'] for row in response.json()],[first,second])
   self.assertEqual(self.client.get('/api/v1/practice/sessions/'+self.sid,headers=self.headers(self.other)).status_code,404)
-  self.client.post('/api/v1/practice/sessions/'+self.sid+'/end',headers=self.headers(self.uid))
+  with patch('app.services.conversation.handler.get_conversation_handler') as get_handler:
+   get_handler.return_value.evaluate_conversation=AsyncMock(return_value='Situation 7 Problem 7 Implication 7 need-payoff 7')
+   ended=self.client.post('/api/v1/practice/sessions/'+self.sid+'/end',headers=self.headers(self.uid))
+   self.assertEqual(ended.status_code,200,ended.text)
+   get_handler.return_value.evaluate_conversation.assert_awaited_once()
   self.assertEqual(len(self.client.get(url,headers=self.headers(self.uid)).json()),2)
 
 if __name__=='__main__':unittest.main()

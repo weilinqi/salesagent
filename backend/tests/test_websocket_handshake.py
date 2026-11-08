@@ -44,6 +44,24 @@ class HandshakeTests(unittest.TestCase):
  def test_owner_can_join_without_echoing_secret(self):
   with self.client.websocket_connect('/ws/practice/'+self.sid,subprotocols=['salesagent','bearer.'+create_access_token(self.uid)]) as ws:
    self.assertEqual(ws.accepted_subprotocol,'salesagent');self.assertEqual(ws.receive_json()['type'],'status_update')
+
+ def test_local_development_accepts_loopback_alias_for_configured_frontend_port(self):
+  with patch.object(main.settings,'ENVIRONMENT','development'),patch.object(main.settings,'CORS_ORIGINS',['http://localhost:5173']):
+   with self.client.websocket_connect('/ws/practice/'+self.sid,headers={'origin':'http://127.0.0.1:5173'},subprotocols=['salesagent','bearer.'+create_access_token(self.uid)]) as ws:
+    self.assertEqual(ws.receive_json()['type'],'status_update')
+
+ def test_production_and_unconfigured_origins_remain_rejected(self):
+  for environment,origin in [('production','http://127.0.0.1:5173'),('development','http://127.0.0.1:9999'),('development','http://evil.example:5173'),('development','https://127.0.0.1:5173')]:
+   with self.subTest(environment=environment,origin=origin),patch.object(main.settings,'ENVIRONMENT',environment),patch.object(main.settings,'CORS_ORIGINS',['http://localhost:5173']):
+    with self.assertRaises(WebSocketDisconnect):
+     with self.client.websocket_connect('/ws/practice/'+self.sid,headers={'origin':origin},subprotocols=['salesagent','bearer.'+create_access_token(self.uid)]):pass
+
+ def test_loopback_alias_preserves_explicit_ports_and_rejects_malformed_origins(self):
+  from app.core.websocket_origin import allowed_websocket_origin
+  self.assertTrue(allowed_websocket_origin('http://[::1]:5173',['http://localhost:5173'],'development'))
+  self.assertTrue(allowed_websocket_origin('http://127.0.0.1:80',['http://localhost'],'development'))
+  for origin in ['http://127.0.0.1:0','http://127.0.0.1:invalid','http://user@127.0.0.1','http://127.0.0.1/path','http://127.0.0.1?query=1','http://127.0.0.1#fragment']:
+   self.assertFalse(allowed_websocket_origin(origin,['http://localhost'],'development'),origin)
  def test_expired_connection_can_renew_same_users_access_token(self):
   from datetime import timedelta
   old=create_access_token(self.uid);new=create_access_token(self.uid,timedelta(hours=2))
