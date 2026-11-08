@@ -18,6 +18,8 @@ from app.schemas.knowledge import (
     SPINQuestionRequest, SPINQuestionResponse,
 )
 from app.services.rag import EmbeddingService, PDFParser, TextChunker, VectorStore
+from app.services.rag.hybrid_search import hybrid_search
+from app.services.search import search_via_mcp
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/knowledge", tags=["knowledge"],
@@ -160,7 +162,7 @@ def recover_interrupted_ingestions() -> int:
 def _search_result(result: dict) -> KnowledgeSearchResult:
     # A legacy vector record may contain an absolute source/full_path.
     source = Path(PureWindowsPath(result.get("source", "")).name).name
-    allowed = {"category", "chapter", "section", "spin_stage", "page_count", "source"}
+    allowed = {"category", "chapter", "section", "spin_stage", "page", "page_count", "source"}
     metadata = {key: value for key, value in result.get("metadata", {}).items() if key in allowed}
     if "source" in metadata:
         metadata["source"] = source
@@ -168,11 +170,14 @@ def _search_result(result: dict) -> KnowledgeSearchResult:
                                  score=result["score"], metadata=metadata)
 
 
-async def _search(query: str, top_k: int = 5, source_filter: str | None = None) -> list[dict]:
+async def _search(query: str, top_k: int = 5, source_filter: str | None = None,
+                  category: str | None = None) -> list[dict]:
     try:
         embedding = await _embedding_service.embed_text(query)
-        return await asyncio.to_thread(_vector_store.search, query_embedding=embedding,
-                                       top_k=top_k, source_filter=source_filter)
+        options = {'query_embedding': embedding, 'top_k': top_k, 'source_filter': source_filter}
+        if category:
+            options['category'] = category
+        return await asyncio.to_thread(_vector_store.search, **options)
     except Exception:
         logger.exception("Knowledge search failed")
         raise HTTPException(status_code=503, detail="Knowledge search is temporarily unavailable") from None
@@ -180,26 +185,19 @@ async def _search(query: str, top_k: int = 5, source_filter: str | None = None) 
 
 @router.post("/search", response_model=KnowledgeSearchResponse)
 async def search_knowledge(request: KnowledgeSearchRequest):
-    results = await _search(request.query, max(request.top_k * 5, request.top_k), request.source_filter)
-    seen_ids = {}
-    for result in results:
-        cid = result.get("id")
-        previous = seen_ids.get(cid)
-        if previous is None or len(result.get("text", "")) > len(previous.get("text", "")):
-            seen_ids[cid] = result
-    seen_keys, deduped = set(), []
-    for result in sorted(seen_ids.values(), key=lambda item: -item.get("score", 0)):
-        if request.category and result.get("metadata", {}).get("category") != request.category:
-            continue
-        key = (result.get("source", ""), result.get("metadata", {}).get("chapter", ""),
-               (result.get("text", "") or "")[:80])
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
-        deduped.append(_search_result(result))
-        if len(deduped) >= request.top_k:
-            break
-    return KnowledgeSearchResponse(results=deduped, query=request.query, total=len(deduped))
+    async def semantic(req):
+        return await _search(req.query, req.top_k * 5, req.source_filter, req.category)
+
+    async def lexical(req):
+        return await asyncio.to_thread(_vector_store.keyword_search, req.query, req.top_k * 5,
+                                       req.source_filter, req.category)
+
+    try:
+        response = await hybrid_search(request, semantic, lexical, search_via_mcp)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Knowledge search is temporarily unavailable") from None
+    response['results'] = [_search_result(row) for row in response['results']]
+    return KnowledgeSearchResponse(**response)
 
 
 @router.post("/ingest", response_model=KnowledgeIngestResponse,

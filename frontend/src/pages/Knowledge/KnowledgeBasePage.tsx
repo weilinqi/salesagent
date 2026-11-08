@@ -11,7 +11,7 @@
  */
 import { useState, useEffect, useRef } from 'react'
 import api, { createKnowledgeMonitor, initialKnowledgeState } from '../../api/knowledge'
-import type { SearchResult, SpinQuestions } from '../../api/knowledge'
+import type { SearchResult, SpinQuestions, SearchMode, WebSearchResult } from '../../api/knowledge'
 
 const KnowledgeBasePage = () => {
   const [activeTab, setActiveTab] = useState('search')
@@ -19,6 +19,13 @@ const KnowledgeBasePage = () => {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchMode, setSearchMode] = useState<SearchMode>('auto')
+  const [webResults, setWebResults] = useState<WebSearchResult[]>([])
+  const [searchNotices, setSearchNotices] = useState<string[]>([])
+  const [hasSearched, setHasSearched] = useState(false)
+  const searchRequest = useRef<AbortController | null>(null)
+
+  useEffect(() => () => searchRequest.current?.abort(), [])
 
   const [knowledgeState, setKnowledgeState] = useState(initialKnowledgeState)
   const { documents, stats, isLoading, loadError, isIngesting, ingestNotice, submissionErrors, pollingPaused } = knowledgeState
@@ -51,20 +58,30 @@ const KnowledgeBasePage = () => {
   const loadData = () => { void monitorRef.current?.refresh() }
   const handleSearch = async () => {
     if (!searchQuery.trim()) return
-
+    searchRequest.current?.abort()
+    const controller = new AbortController()
+    searchRequest.current = controller
     setIsSearching(true)
     setSearchError(null)
+    setSearchResults([])
+    setWebResults([])
+    setSearchNotices([])
+    setHasSearched(true)
     try {
-      const response = await api.search(searchQuery, 5)
+      const response = await api.search(searchQuery.trim(), 5, searchMode, controller.signal)
+      if (controller.signal.aborted) return
       setSearchResults(response.results || [])
+      setWebResults(response.web_results || [])
+      setSearchNotices(response.notices || [])
     } catch (error: any) {
+      if (controller.signal.aborted) return
       console.error('Search failed:', error)
       setSearchResults([])  // 失败时不返回任何伪造结果
       setSearchError(
         error?.response?.data?.detail || error?.message || '搜索失败'
       )
     } finally {
-      setIsSearching(false)
+      if (!controller.signal.aborted) setIsSearching(false)
     }
   }
 
@@ -98,9 +115,21 @@ const KnowledgeBasePage = () => {
 
   const renderSearchTab = () => (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label htmlFor="knowledge-search-mode">检索范围</label>
+        <select id="knowledge-search-mode" value={searchMode}
+          onChange={(event) => setSearchMode(event.target.value as SearchMode)}
+          className="border border-gray-300 rounded-lg px-3 py-2">
+          <option value="auto">本地优先，自动联网补充</option>
+          <option value="local">仅内部知识库</option>
+          <option value="web">仅联网搜索</option>
+        </select>
+        <span className="text-gray-500">自动补充会将搜索词发送给 MiniMax；内部文档不发送到联网搜索。</span>
+      </div>
       <div className="flex gap-2">
         <input
           type="text"
+          maxLength={500}
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder="输入关键词搜索知识库..."
@@ -109,12 +138,30 @@ const KnowledgeBasePage = () => {
         />
         <button
           onClick={handleSearch}
-          disabled={isSearching}
+          disabled={isSearching || !searchQuery.trim()}
           className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 disabled:opacity-50"
         >
           {isSearching ? '搜索中...' : '搜索'}
         </button>
       </div>
+
+      {searchNotices.map((notice) => (
+        <p key={notice} role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{notice}</p>
+      ))}
+      {webResults.length > 0 && (
+        <section aria-label="网络补充资料" className="space-y-3">
+          <h3 className="font-semibold">网络补充资料（{webResults.length}）</h3>
+          <p className="text-sm text-gray-500">以下为公开网页摘要，请打开原文核对；不属于内部审核知识。</p>
+          {webResults.map((result) => (
+            <article key={result.url} className="rounded-lg border border-blue-200 bg-white p-4">
+              <a href={/^https?:\/\//i.test(result.url) ? result.url : undefined} target="_blank" rel="noopener noreferrer"
+                className="font-medium text-primary underline">{result.title || result.url}</a>
+              <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">{result.snippet}</p>
+              <p className="mt-2 text-xs text-gray-500 break-all">{result.url}{result.date ? ` · ${result.date}` : ''}</p>
+            </article>
+          ))}
+        </section>
+      )}
 
       {searchError ? (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
@@ -135,19 +182,19 @@ const KnowledgeBasePage = () => {
                   {result.source}
                 </span>
                 <span className="text-xs text-gray-400">
-                  相似度: {Math.round(result.score * 100)}%
+                  内部知识库
                 </span>
               </div>
               <p className="text-gray-700 text-sm leading-relaxed">{result.text}</p>
             </div>
           ))}
         </div>
-      ) : (
+      ) : webResults.length > 0 ? null : (
         <div className="text-center py-8 text-gray-500">
           <svg className="w-12 h-12 text-gray-300 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
-          <p>输入关键词开始搜索知识库</p>
+          <p>{isSearching ? '正在检索，请稍候…' : hasSearched ? '没有找到相关资料，试试产品全称、同义词或联网搜索。' : '输入关键词或完整问题开始检索'}</p>
         </div>
       )}
     </div>

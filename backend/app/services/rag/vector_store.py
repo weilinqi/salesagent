@@ -114,11 +114,17 @@ class VectorStore:
         self,
         query_embedding: List[float],
         top_k: int = 5,
-        source_filter: Optional[str] = None
+        source_filter: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> List[Dict]:
         """Search by query embedding (cosine, top_k)."""
         self._connect()
-        where = {"source": source_filter} if source_filter else None
+        filters = []
+        if source_filter:
+            filters.append({"source": source_filter})
+        if category:
+            filters.append({"category": category})
+        where = {"$and": filters} if len(filters) > 1 else (filters[0] if filters else None)
         results = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
@@ -146,6 +152,38 @@ class VectorStore:
                 "score": score,
             })
         return out
+
+    def keyword_search(self, query: str, top_k: int = 25,
+                       source_filter: Optional[str] = None, category: Optional[str] = None) -> List[Dict]:
+        """Fetch at most 100 candidates per term without loading all stored vectors."""
+        from .hybrid_search import expanded_terms
+        import re
+        self._connect()
+        filters = []
+        if source_filter:
+            filters.append({'source': source_filter})
+        if category:
+            filters.append({'category': category})
+        where = {'$and': filters} if len(filters) > 1 else (filters[0] if filters else None)
+        terms = expanded_terms(query)
+        candidates = {}
+        # Chroma contains matching is case-sensitive; include original model casing.
+        original_tokens = re.findall(r'[a-zA-Z0-9][a-zA-Z0-9._-]*', query)
+        originals = [query.strip()] + original_tokens + terms
+        direct_terms = [query.strip().lower()] + [token.lower() for token in original_tokens]
+        for term in list(dict.fromkeys(originals))[:24]:
+            results = self._collection.get(where=where, where_document={'$contains': term},
+                                           limit=100, include=['documents', 'metadatas'])
+            for index, cid in enumerate(results['ids']):
+                text = results['documents'][index] or ''
+                meta = results['metadatas'][index] or {}
+                matched = [term for term in terms if term in text.lower()]
+                score = min(1.0, max((len(term) for term in matched), default=0) / max(1, min(len(query), 8)))
+                direct = max((len(term) for term in direct_terms if term in text.lower()), default=0)
+                candidates[cid] = {'id': cid, 'text': text, 'source': meta.get('source', ''),
+                                   'metadata': meta, 'score': score,
+                                   '_query_coverage': min(1.0, direct / max(1, len(query.strip())))}
+        return sorted(candidates.values(), key=lambda row: -row['score'])[:top_k]
 
     def get_by_source(self, source: str) -> List[Dict]:
         self._connect()

@@ -34,6 +34,20 @@ export interface SearchResult {
   metadata: Record<string, any>
 }
 
+export type SearchMode = 'local' | 'auto' | 'web'
+export interface WebSearchResult {
+  title: string
+  url: string
+  snippet: string
+  date: string
+}
+export interface KnowledgeSearchResponse {
+  results: SearchResult[]
+  total: number
+  web_results?: WebSearchResult[]
+  notices?: string[]
+}
+
 export interface SpinQuestions {
   situation_questions: string[]
   problem_questions: string[]
@@ -62,8 +76,8 @@ const api = {
   /**
    * Search knowledge base
    */
-  async search(query: string, top_k: number = 5): Promise<{ results: SearchResult[]; total: number }> {
-    const response = await axios.post(`${API_BASE}/search`, { query, top_k })
+  async search(query: string, top_k: number = 5, mode: SearchMode = 'local', signal?: AbortSignal): Promise<KnowledgeSearchResponse> {
+    const response = await axios.post(`${API_BASE}/search`, { query, top_k, mode }, { signal })
     return response.data
   },
 
