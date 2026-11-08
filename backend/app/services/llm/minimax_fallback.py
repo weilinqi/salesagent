@@ -72,7 +72,7 @@ def backup_for(service, error):
     if not credential_error(error): return None
     backup = service._fallback_service()
     if backup is not None:
-        logger.warning('MiniMax primary credential unavailable; trying configured backup once.')
+        logger.warning('MiniMax credential unavailable; trying next configured credential.')
     return backup
 
 
@@ -85,7 +85,7 @@ def key_fallback(method):
             backup = backup_for(self, exc)
             if backup is None: raise
         try:
-            return await method(backup, *args, **kwargs)
+            return await wrapped(backup, *args, **kwargs)
         except MiniMaxAPIError as exc:
             exc.backup_attempted = True
             raise
@@ -108,7 +108,7 @@ def stream_key_fallback(method):
             if backup is None: raise
         finally:
             await stream.aclose()
-        stream = method(backup, *args, **kwargs)
+        stream = wrapped(backup, *args, **kwargs)
         try:
             async for part in stream: yield part
         except MiniMaxAPIError as exc:

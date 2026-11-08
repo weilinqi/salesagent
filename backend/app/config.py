@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # MiniMax LLM
     MINIMAX_API_KEY: Optional[str] = None
     MINIMAX_FALLBACK_API_KEY: Optional[str] = Field(default=None, repr=False)
+    MINIMAX_TERTIARY_API_KEY: Optional[str] = Field(default=None, repr=False)
     MINIMAX_SEARCH_API_KEY: Optional[str] = Field(default=None, repr=False)
     MINIMAX_API_HOST: str = "https://api.minimaxi.com"
     MINIMAX_USE_PROXY: bool = False
