@@ -274,8 +274,9 @@ async def generate_persona_for_session(scenario_name: str, role_config: dict) ->
 async def generate_opening_message(scenario_name: str, scenario_id: str,
                                    role_config: dict,
                                    persona: Optional[dict] = None) -> str:
-    from app.services.conversation.customer_voice import opening
-    return opening(persona)
+    from app.services.conversation.customer_voice import generate_customer_opening
+    from app.services.llm import get_minimax_service
+    return await generate_customer_opening(persona, get_minimax_service().chat)
 
 
 # =============================================================================
