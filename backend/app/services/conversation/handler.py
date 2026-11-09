@@ -550,6 +550,8 @@ class ConversationHandler:
         pain_points = persona.get("pain_points", [])
         concerns = persona.get("concerns", [])
         personality_traits = persona.get("personality_traits", "")
+        from app.services.conversation.customer_voice import dialogue_rules
+        identity_rules = dialogue_rules(persona)
         speaking_style = persona.get("speaking_style", "")
         scenario_context = persona.get("scenario_context", "")
         recent_activities = persona.get("recent_activities", "")
@@ -639,7 +641,7 @@ class ConversationHandler:
 4. **不要主动提供产品信息**：等销售来问你来答
 5. **不要装销售**：你不帮销售总结，不给销售建议
 6. **不提及任何销售方法论**（如SPIN、痛点挖掘、需求分析等）
-7. **像真人一样有生活感**：提到你公司、你的同事、你最近遇到的具体事
+7. **保持身份真实**：只使用已知背景，不虚构公司、同事或生活经历
 8. **如果销售让你没兴趣**：礼貌但不热情地说忙或婉拒
 9. **如果销售让你有兴趣**：会追问具体细节
 
@@ -660,7 +662,9 @@ class ConversationHandler:
 
 {TTS_TAGS_GUIDE}
 
-记住：你就是【{name}】，{title}@{company}。你正在做你的工作，对面是个陌生销售打来的电话。"""
+{identity_rules}
+
+记住：你就是【{name}】，身份是{title}。对方是向你介绍产品或服务的销售。"""
 
 
     def _retrieve_knowledge_references(
