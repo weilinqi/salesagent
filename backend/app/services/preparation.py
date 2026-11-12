@@ -42,7 +42,8 @@ class PreparationRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
 
 class BackgroundRequest(BaseModel):
-    organization: str = Field(min_length=1, max_length=1000)
+    target: str = Field(default="", max_length=1000)
+    organization: str = Field(default='', max_length=1000)
     product: str = Field(default='', max_length=1000)
     needs: str = Field(default='', max_length=1000)
 
