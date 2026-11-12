@@ -8,10 +8,32 @@ class SearchUnavailable(RuntimeError):
     """Safe, user-facing search failure without credentials/provider payloads."""
 
 async def search_via_mcp(query: str, num_results: int = 5) -> list:
+    if not query.strip(): return []
+    keys = list(dict.fromkeys(k for k in (
+        settings.MINIMAX_SEARCH_API_KEY, settings.MINIMAX_API_KEY,
+        getattr(settings, 'MINIMAX_FALLBACK_API_KEY', None),
+        getattr(settings, 'MINIMAX_TERTIARY_API_KEY', None)) if k))
+    if not keys: raise SearchUnavailable('尚未配置 MiniMax 搜索密钥。')
+    for index, key in enumerate(keys):
+        try:
+            return await _search_once(query, num_results, key)
+        except SearchUnavailable as exc:
+            if not getattr(exc, 'retry_key', False): raise
+            if index == len(keys)-1:
+                raise SearchUnavailable('所有已配置搜索密钥均失败。' + str(exc)) from None
+    return []
+
+
+def credential_failure(message):
+    error = SearchUnavailable(message)
+    error.retry_key = True
+    return error
+
+
+async def _search_once(query: str, num_results: int, key: str) -> list:
     query = query.strip()
     if not query:
         return []
-    key = settings.MINIMAX_SEARCH_API_KEY or settings.MINIMAX_API_KEY
     if not key:
         raise SearchUnavailable('尚未配置 MiniMax 搜索密钥。')
     host = settings.MINIMAX_API_HOST.rstrip('/')
@@ -23,17 +45,19 @@ async def search_via_mcp(query: str, num_results: int = 5) -> list:
                 headers={'Authorization': f'Bearer {key}', 'MM-API-Source': 'Minimax-MCP'},
                 json={'q': query})
         if response.status_code in (401, 403):
-            raise SearchUnavailable('MiniMax 搜索鉴权失败，请检查密钥、所属站点及搜索权限。')
-        if response.status_code == 429:
-            raise SearchUnavailable('MiniMax 搜索额度或频率受限，请稍后重试。')
+            raise credential_failure('MiniMax 搜索鉴权失败，请检查密钥、所属站点及搜索权限。')
+        if response.status_code in (402, 429):
+            raise credential_failure('MiniMax 搜索额度或频率受限，请稍后重试。')
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict) or not isinstance(data.get('base_resp'), dict):
             raise SearchUnavailable('MiniMax 搜索返回格式异常，请稍后重试。')
         code = data['base_resp'].get('status_code')
         if code != 0:
+            if code in (1002, 1008, 1041, 2045, 2046, 2047, 2049, 2053, 2056, 2062, 2067):
+                raise credential_failure('MiniMax 搜索额度或频率受限（错误码 ' + str(code) + '）。')
             if code == 1004:
-                raise SearchUnavailable('MiniMax 搜索鉴权失败，请检查密钥、所属站点及搜索权限。')
+                raise credential_failure('MiniMax 搜索鉴权失败，请检查密钥、所属站点及搜索权限。')
             if code == 2038:
                 raise SearchUnavailable('MiniMax 搜索需要先在开放平台完成实名认证。')
             raise SearchUnavailable('MiniMax 搜索暂不可用，请检查账户额度及搜索权限。')

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
+import SalesMaterialPreview from './SalesMaterialPreview'
 
 export type PreparationProfile = Record<'industry' | 'product' | 'target' | 'organization' | 'needs' | 'preferences' | 'goal', string>
 const fields: [keyof PreparationProfile, string, string][] = [
@@ -9,7 +10,8 @@ const fields: [keyof PreparationProfile, string, string][] = [
   ['goal', '本次练习目标', '必填'],
 ]
 const empty: PreparationProfile = { industry: '', product: '', target: '', organization: '', needs: '', preferences: '', goal: '' }
-export type Background = { organization: string; overview?: { title: string; summary: string; url: string } | null; sources: { title: string; summary: string; url: string }[]; notice: string; checked_at?: string }
+type ResearchSource = { title: string; summary: string; url: string; date?: string; publisher?: string; topic?: string }
+export type Background = { digest_version?: number; roles?: Record<string, string>; insights?: { title: string; summary: string; caveat?: string; sources: ResearchSource[] }[]; search_key?: string; gaps?: string[]; organization: string; overview?: { title: string; summary: string; url: string; date?: string; publisher?: string; topic?: string } | null; sources: { title: string; summary: string; url: string; date?: string; publisher?: string; topic?: string }[]; notice: string; checked_at?: string }
 
 export default function CustomerPreparation({ onStart, starting, initialProfile }: { initialProfile?: Partial<PreparationProfile>; onStart: (profile: PreparationProfile, background?: Background) => Promise<void>; starting: boolean }) {
   const [profile, setProfile] = useState<PreparationProfile>(() => ({ ...empty, ...initialProfile }))
@@ -32,17 +34,17 @@ export default function CustomerPreparation({ onStart, starting, initialProfile 
   useEffect(() => () => { generation.current++; request.current?.abort() }, [])
   useEffect(() => {
     setBackground(null)
-    if (!profile.organization.trim() || starting) { setSearching(false); return }
+    if ((!profile.organization.trim() && !profile.product.trim()) || starting) { setSearching(false); return }
     const controller = new AbortController()
     setSearching(true)
     const timer = setTimeout(() => {
-      axios.post<Background>('/api/v1/practice/preparation/background', { organization: profile.organization.trim(), product: profile.product, needs: profile.needs }, { signal: controller.signal, timeout: 16000 })
+      axios.post<Background>('/api/v1/practice/preparation/background', { organization: profile.organization.trim(), product: profile.product, needs: profile.needs, target: profile.target }, { signal: controller.signal, timeout: 45000 })
         .then(({ data }) => { if (!controller.signal.aborted) setBackground(data) })
         .catch(() => { if (!controller.signal.aborted) setBackground({ organization: profile.organization.trim(), sources: [], notice: '暂无可靠资料，可继续补充或直接进入对练。' }) })
         .finally(() => { if (!controller.signal.aborted) setSearching(false) })
     }, 800)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [profile.organization, profile.product, profile.needs, starting])
+  }, [profile.organization, profile.product, profile.needs, profile.target, starting])
 
   async function collect() {
     if (!message.trim() || busy || starting) return
@@ -71,7 +73,7 @@ export default function CustomerPreparation({ onStart, starting, initialProfile 
   async function start() {
     if (!ready || starting) return
     generation.current++; request.current?.abort(); setBusy(false)
-    await onStart(Object.fromEntries(fields.map(([key]) => [key, current.current[key].trim()])) as PreparationProfile, background?.organization === current.current.organization.trim() ? background : undefined)
+    await onStart(Object.fromEntries(fields.map(([key]) => [key, current.current[key].trim()])) as PreparationProfile, background?.search_key === [current.current.organization, current.current.product, current.current.needs, current.current.target].map(value => value.trim()).join('\n') ? background : undefined)
   }
 
   return <section className="space-y-5">
@@ -93,8 +95,9 @@ export default function CustomerPreparation({ onStart, starting, initialProfile 
         <input aria-label={label} value={profile[key]} maxLength={1000} disabled={starting} onChange={e => setProfile(prev => ({ ...prev, [key]: e.target.value }))} placeholder={requirement} className="min-w-0 flex-1 rounded border px-3 py-2 text-sm" />
       </label>)}
     </div>
-    {searching && <p role="status" className="text-sm text-gray-500">正在查询机构公开背景，可随时进入对练…</p>}
-    {background && <div className="rounded-lg bg-gray-50 p-3 text-sm"><h3 className="font-medium">背景介绍：{background.organization}</h3><p className="my-2 text-gray-500">{background.notice}</p><div className="mb-3"><h4 className="font-medium">背景概况</h4>{background.overview ? <><p>{background.overview.summary}</p><a href={background.overview.url} target="_blank" rel="noreferrer" className="text-primary underline">来源：{background.overview.title}</a></> : <p className="text-gray-500">暂未查到可靠的背景概况。</p>}</div><ol className="list-decimal pl-5 space-y-3">{background.sources.slice(0, 4).map((source, i) => <li key={i}><a href={source.url} target="_blank" rel="noreferrer" className="text-primary underline">{source.title}</a><p>{source.summary}</p></li>)}</ol>{background.checked_at && <p className="mt-2 text-xs text-gray-400">查询时间：{new Date(background.checked_at).toLocaleString()}</p>}</div>}
+    {searching && <p role="status" className="text-sm text-gray-500">正在搜索产品及对象相关资料，可随时进入对练…</p>}
+    {background && <div className="rounded-lg bg-gray-50 p-3 text-sm"><h3 className="font-medium">背景介绍：{background.organization}</h3><p className="my-2 text-gray-500">{background.notice}</p>{background.digest_version ? <ol className="list-decimal pl-5 space-y-4">{background.insights?.map((item, i) => <li key={i}><h4 className="font-medium">{item.title}</h4><p className="mt-1">{item.summary}</p>{item.caveat && <p className="mt-1 text-amber-700">{item.caveat}</p>}<ul className="mt-2 space-y-1 text-xs">{item.sources.map(source => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer" className="text-primary underline">{source.title}</a><span className="text-gray-500"> · {source.date || '日期未提供'}</span></li>)}</ul></li>)}</ol> : <><div className="mb-3"><h4 className="font-medium">背景概况</h4>{background.overview ? <><p>{background.overview.summary}</p><a href={background.overview.url} target="_blank" rel="noreferrer" className="text-primary underline">来源：{background.overview.title}</a></> : <p className="text-gray-500">暂未查到可靠的背景概况。</p>}</div><ol className="list-decimal pl-5 space-y-3">{background.sources.map((source, i) => <li key={i}><a href={source.url} target="_blank" rel="noreferrer" className="text-primary underline">{source.title}</a><p>{source.summary}</p><p className="text-xs text-gray-500">{source.topic} · {source.publisher} · {source.date || '日期未提供'}</p></li>)}</ol></>}{background.gaps?.map((gap, i) => <p key={i} className="mt-2 text-amber-700">{gap}</p>)}{background.checked_at && <p className="mt-2 text-xs text-gray-400">查询时间：{new Date(background.checked_at).toLocaleString()}</p>}</div>}
+    {!searching && background?.search_key === [profile.organization, profile.product, profile.needs, profile.target].map(value => value.trim()).join('\n') && <SalesMaterialPreview key={JSON.stringify(profile) + background.checked_at} profile={profile} background={background} />}
     <p className="text-xs text-gray-500">未填资料保持未知。模拟设定：客户沟通谨慎、适度追问，依据你的回应调整态度。</p>
     {ready ? <button type="button" disabled={starting} onClick={() => void start()} className="w-full rounded-lg bg-primary p-3 font-medium text-white disabled:opacity-40">{starting ? '正在进入对练…' : '直接进入对练'}</button> : <p className="text-sm text-gray-500">明确产品或服务、对象身份、练习目标后，即可直接进入对练。</p>}
   </section>

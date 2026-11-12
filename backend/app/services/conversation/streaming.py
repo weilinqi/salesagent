@@ -115,6 +115,17 @@ def remaining(buffer_text: str) -> str:
     return buffer_text[last_boundary:]
 
 
+def visible_stream_text(text: str) -> str:
+    # Do not reveal reasoning, including a tag split across network chunks.
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.S | re.I)
+    text = re.sub(r'<think>.*$', '', text, flags=re.S | re.I)
+    for size in range(1, len('<think>')):
+        if text.lower().endswith('<think>'[:size]):
+            text = text[:-size]
+            break
+    return text.strip()
+
+
 def strip_think_blocks(text: str) -> str:
     """保留为防御性兜底 — 当前 chat_stream 默认 reasoning_split=True，
     内容里不应再含 <think> 块。万一上游退化，这里做最后一道保险。"""
@@ -457,6 +468,8 @@ async def stream_pipeline(
     try:
         token_count = 0
         first_token_at = None
+        last_visible = ""
+        last_text_sent = 0.0
         # 关键优化：边收 LLM token 边推送 TTS 完成的 audio chunk
         async def monitor_tts():
             """在 LLM 还在生成时，实时把已完成的 TTS 推给前端"""
@@ -511,11 +524,16 @@ async def stream_pipeline(
             buf.push(token)
             # 实时推 streaming update（让前端看到 AI 正在"打字"）
             # 用 strip 后的 full_text 作为可见内容
-            visible = strip_think_blocks(full_text) if False else full_text
-            if visible.strip() and (not sentences_emitted or sentences_emitted[-1] != visible):
-                # 第一句还没 fire 时不发 update（等真正 TTS 时一起发）
-                pass
-            # 实时把 visible text 推给前端（但 ai_streaming_update content 留空给 LLM 完才发）
+            visible = visible_stream_text(full_text)
+            now = time.monotonic()
+            if visible and visible != last_visible and not looks_like_reasoning_dump(visible):
+                if not last_visible or now - last_text_sent >= 0.08:
+                    await websocket_send({
+                        "type": "ai_streaming_update", "id": msg_id,
+                        "content": visible, "timestamp": time.time(),
+                    })
+                    last_visible = visible
+                    last_text_sent = now
         llm_streaming = False
         end_ms = int((time.time() - t0) * 1000)
         print(f"[STREAM][T={end_ms:>5}ms] ← LLM stream ended, total {token_count} tokens, first_token_at={first_token_at}ms, last_token_at={end_ms}ms")
