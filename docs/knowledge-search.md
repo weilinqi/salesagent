@@ -20,9 +20,9 @@ MINIMAX_API_HOST=https://api.minimaxi.com
 MINIMAX_USE_PROXY=false
 ```
 
-搜索密钥为空时复用 `MINIMAX_API_KEY`。该账户必须具有搜索接口权限；对话调用成功不代表搜索权限也可用。国际站使用 `https://api.minimax.io`，密钥应与站点匹配。重启后端后生效。
+搜索凭证按以下顺序尝试：`MINIMAX_SEARCH_API_KEY`、`MINIMAX_API_KEY`、`MINIMAX_FALLBACK_API_KEY`、`MINIMAX_TERTIARY_API_KEY`。重复的凭证会去重；只有鉴权、余额或频率限制错误才切换下一把 key。实名认证错误不会重试。该账户必须具有搜索接口权限；对话调用成功不代表搜索权限也可用。国际站使用 `https://api.minimax.io`，密钥应与站点匹配。重启后端后生效。
 
-本次复用项目现有的 MiniMax 搜索适配器；对话/语音三重凭证兜底保留，搜索失败单独显示降级提示，不宣称搜索接口也具有三重兜底。实现中不自动重试搜索，以免重复消耗额度。
+本次复用项目现有的 MiniMax 搜索适配器；对话/语音和联网搜索均按各自凭证配置执行有界兜底。搜索失败单独显示降级提示；不会在普通连接错误或超时后重试。
 
 ## API 兼容性
 

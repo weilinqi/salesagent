@@ -57,6 +57,27 @@ interface SpinGuidanceData {
   not_found: boolean
   searched?: boolean
   search_error?: boolean
+  isInitial?: boolean
+  last_search_query?: string
+  updated_at?: string
+}
+
+const INITIAL_SPIN_GUIDANCE: SpinGuidanceData = {
+  phase: 'Situation',
+  focus: '先了解孩子当前情况和家长最希望改善的目标',
+  parent_facts: [],
+  unknowns: [
+    '孩子的年级、学段和目前学习状态',
+    '家长这次最关注的目标或困难',
+    '已经尝试过的方法及效果',
+  ],
+  next_step: '先问孩子目前几年级，以及家长今天最想解决什么问题。',
+  reminder: '先听清情况和顾虑，再决定是否介绍课程；价格、效果和政策以知识库资料为准。',
+  script: '方便先说说孩子目前几年级吗？您这次最希望优先改善哪方面？',
+  references: [],
+  not_found: false,
+  searched: false,
+  isInitial: true,
 }
 
 const PracticeChatPage = () => {
@@ -522,11 +543,13 @@ const PracticeChatPage = () => {
         {/* OR-4: Real-time SPIN Stage Hint Sidebar */}
         <div className="w-80 border-l border-gray-200 bg-gray-50 overflow-y-auto p-3">
           <p className="text-xs font-medium text-gray-500 mb-3">实时SPIN指导</p>
-          {spinGuidance ? <SpinStageHint guidance={spinGuidance} /> : (
-            <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-500">
-              对话后将更新沟通重点、待了解信息和实时提醒。
-            </div>
-          )}
+          <SpinStageHint
+            key={currentSession?.id}
+            guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}
+            sessionId={currentSession?.id}
+            preparationProfile={currentSession?.customer_context?.preparation}
+            preparationBackground={currentSession?.customer_context?.preparation_background}
+          />
         </div>
       </div>
 
