@@ -45,6 +45,20 @@ interface PhaseSummaryData {
   suggestions: string[]
 }
 
+interface SpinGuidanceData {
+  phase: string
+  focus: string
+  parent_facts: string[]
+  unknowns: string[]
+  next_step: string
+  reminder: string
+  script: string
+  references: Array<{ source: string; text: string }>
+  not_found: boolean
+  searched?: boolean
+  search_error?: boolean
+}
+
 const PracticeChatPage = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -62,6 +76,7 @@ const PracticeChatPage = () => {
   const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false)
   const [currentPhaseSummary, setCurrentPhaseSummary] = useState<PhaseSummaryData | null>(null)
   const [isSummaryLoading, setIsSummaryLoading] = useState(false)
+  const [spinGuidance, setSpinGuidance] = useState<SpinGuidanceData | null>(null)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -98,6 +113,7 @@ const PracticeChatPage = () => {
     setLoadedSessionId(null)
     setHistoryError(null)
     setMessages_([])
+    setSpinGuidance(null)
     currentAIMessageIdRef.current = null
     void loadSessionHistory(targetSessionId, controller.signal).then(({ session, messages }) => {
       if (controller.signal.aborted) return
@@ -120,6 +136,10 @@ const PracticeChatPage = () => {
     : null
 
   const handleMessage = useCallback((wsMessage: StreamMessage) => {
+    if (wsMessage.type === 'spin_guidance' && wsMessage.data) {
+      setSpinGuidance(wsMessage.data as unknown as SpinGuidanceData)
+      return
+    }
     // Handle different message types from WebSocket
     if (wsMessage.type === 'user_message') {
       // User's own message - already added locally
@@ -341,6 +361,12 @@ const PracticeChatPage = () => {
       // Call the actual API
       const response = await api.getPhaseSummary(currentSession.id, currentSession.current_phase)
       setCurrentPhaseSummary(response)
+      const summaryIssue = response.suggestions?.[0] || response.improvements?.[0]
+      if (summaryIssue) {
+        setSpinGuidance(previous => previous
+          ? { ...previous, reminder: `本阶段提醒：${summaryIssue.slice(0, 96)}` }
+          : previous)
+      }
     } catch (error) {
       console.error('Failed to get phase summary:', error)
       // Fallback to minimal demo data on error
@@ -490,9 +516,13 @@ const PracticeChatPage = () => {
           />
         </div>
         {/* OR-4: Real-time SPIN Stage Hint Sidebar */}
-        <div className="w-72 border-l border-gray-200 bg-gray-50 overflow-y-auto p-3">
+        <div className="w-80 border-l border-gray-200 bg-gray-50 overflow-y-auto p-3">
           <p className="text-xs font-medium text-gray-500 mb-3">实时SPIN指导</p>
-          <SpinStageHint phase={currentSession?.current_phase || 'opening'} />
+          {spinGuidance ? <SpinStageHint guidance={spinGuidance} /> : (
+            <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-500">
+              对话后将更新沟通重点、待了解信息和实时提醒。
+            </div>
+          )}
         </div>
       </div>
 

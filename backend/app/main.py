@@ -283,6 +283,13 @@ async def generate_opening_message(scenario_name: str, scenario_id: str,
 # User message processing (background task)
 # =============================================================================
 
+async def _safe_update_spin_guidance(session_id: str) -> None:
+    try:
+        from app.services.conversation.spin_guidance import update_guidance
+        await update_guidance(session_id)
+    except Exception:
+        logger.exception("SPIN guidance agent unavailable")
+
 async def process_user_message(websocket, session_id: str, content: str,
                               audio_data: str = None,
                               audio_mime: str = None,
@@ -429,6 +436,13 @@ async def process_user_message(websocket, session_id: str, content: str,
         if full_response:
             session_manager.add_message(session_id, "ai", full_response)
             save_message_to_db(session_id, "ai", full_response)
+        if user_text:
+            guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
+            if guidance_tasks is None:
+                manager._spin_guidance_tasks = guidance_tasks = set()
+            guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
+            guidance_tasks.add(guidance_task)
+            guidance_task.add_done_callback(guidance_tasks.discard)
         await _maybe_transition_phase(session_id)
     except Exception as e:
         print(f"[LLM] error: {e}")
@@ -703,6 +717,9 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     if not session_manager.get_context(session_id):
         for role, content in history:
             session_manager.add_message(session_id, role, content)
+    saved_guidance = getattr(manager, "_spin_guidance", {}).get(session_id)
+    if saved_guidance:
+        await manager.send_message(session_id, {"type": "spin_guidance", "data": saved_guidance})
     is_new_conversation = not session_manager.get_context(session_id)
     tasks = set()
     def spawn(coroutine):
@@ -710,6 +727,9 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         tasks.add(task)
         task.add_done_callback(tasks.discard)
         return task
+
+    if not saved_guidance and session_manager.get_context(session_id):
+        spawn(_safe_update_spin_guidance(session_id))
 
     # ------------------------------------------------------------------
     # Fire-and-forget persona + opening message (slow LLM)

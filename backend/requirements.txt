@@ -40,3 +40,4 @@ beautifulsoup4==4.14.2
 
 # LLM SDK
 openai==1.99.0
+langgraph==1.2.22
