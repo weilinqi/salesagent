@@ -181,6 +181,9 @@ async def create_session(
             detail="场景不存在或未审核通过"
         )
 
+    mode = (session_data.customer_context or {}).get('training_mode', 'full')
+    if mode not in ('full', 'rejection'):
+        raise HTTPException(status_code=422, detail='未知训练模块')
     prepared = (session_data.customer_context or {}).get("preparation")
     if prepared is not None:
         try:
@@ -1151,7 +1154,8 @@ async def prepare_customer(body: PreparationRequest):
 
 @router.post("/preparation/background")
 async def prepare_background(body: BackgroundRequest):
-    return await lookup_background(body.organization.strip(), body.product.strip(), body.needs.strip())
+    from app.services.sales_material import research
+    return await research(body.organization.strip(), body.product.strip(), body.needs.strip(), body.target.strip())
 
 
 @router.post("/preparation/preview")
@@ -1162,3 +1166,32 @@ async def preview_customer(body: PreparationRequest):
         if key in values and not values[key]:
             values[key] = value
     return {"profile": PreparationProfile(**values).model_dump()}
+
+
+from app.services.sales_material import MaterialRequest, render_material, search_key
+
+@router.post('/preparation/material.pdf')
+def preparation_material(body: MaterialRequest):
+    from fastapi.responses import Response
+    p = body.profile
+    if body.background.search_key != search_key(p.organization, p.product, p.needs, p.target):
+        raise HTTPException(status_code=422, detail='对象信息已更改，请等待重新搜索后生成资料。')
+    try:
+        content = render_material(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return Response(content, media_type='application/pdf', headers={'Content-Disposition':'inline; filename="sales-material.pdf"', 'Cache-Control':'no-store'})
+
+
+from app.services.sales_suggestions import SuggestionRequest
+
+@router.post('/preparation/suggestions')
+async def preparation_suggestions(body: SuggestionRequest):
+    from app.services.sales_suggestions import sales_suggestions
+    p = body.profile
+    if body.background.search_key and body.background.search_key != search_key(p.organization, p.product, p.needs, p.target):
+        raise HTTPException(status_code=422, detail='对象信息已更改，请等待资料更新。')
+    try:
+        return await sales_suggestions(body)
+    except Exception:
+        raise HTTPException(status_code=503, detail='话术建议暂未生成，请稍后重试。') from None

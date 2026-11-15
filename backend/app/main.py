@@ -571,6 +571,7 @@ async def _init_persona_and_first_message(websocket, session_id: str,
             persona = await generate_persona_for_session(scenario_name, role_config)
             print(f"[WS] Persona ready: {persona.get('name')} - {persona.get('title')}@{persona.get('company')}")
 
+        persona['training_mode'] = (session_info.get('customer_context') or {}).get('training_mode', 'full')
         session_manager.update_session_field(session_id, "persona", persona)
         # Save the generated persona in the existing JSON snapshot so restart or
         # another browser does not generate a different customer for this session.

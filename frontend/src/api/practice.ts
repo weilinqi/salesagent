@@ -33,6 +33,7 @@ export interface SessionCreateResponse {
 }
 
 export interface CustomerContext {
+  training_mode?: 'full' | 'rejection'
   preparation_background?: import('../components/business/practice/CustomerPreparation').Background
   preparation?: import('../components/business/practice/CustomerPreparation').PreparationProfile
   industry: string

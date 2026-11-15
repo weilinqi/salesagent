@@ -41,4 +41,16 @@ class MiniMaxSearchTests(unittest.IsolatedAsyncioTestCase):
         result = await self.run_search({'base_resp':{'status_code':0},'organic':[{'link':'javascript:alert(1)'}]})
         self.assertEqual(result, [])
 
+    async def test_quota_failure_uses_next_key_and_stops_after_success(self):
+        seen = []
+        def handler(request):
+            seen.append(request.headers['Authorization'])
+            return httpx.Response(200, json={'base_resp':{'status_code':2067 if len(seen)==1 else 0}, 'organic':[{'title':'结果','link':'https://example.org','snippet':'资料'}]})
+        original = httpx.AsyncClient
+        config = SimpleNamespace(MINIMAX_SEARCH_API_KEY='',MINIMAX_API_KEY='primary',MINIMAX_FALLBACK_API_KEY='backup',MINIMAX_TERTIARY_API_KEY='third',MINIMAX_API_HOST='https://api.minimaxi.com',MINIMAX_USE_PROXY=False)
+        with patch('app.services.search.settings',config), patch('app.services.search.httpx.AsyncClient',side_effect=lambda **kwargs: original(transport=httpx.MockTransport(handler),**kwargs)):
+            result = await search_via_mcp('学校')
+        self.assertEqual(seen, ['Bearer primary','Bearer backup'])
+        self.assertEqual(len(result),1)
+
 if __name__ == '__main__': unittest.main()
