@@ -84,7 +84,7 @@ async def summarize(roles, evidence):
             '第三方培训招生网站只能标为第三方介绍，不能称为品牌官方或机构已确认。'
             '通用课程参考只说明一般内容，不代表该学校、地区或产品安排。'
             '根据提供的当前日期判断时效，不得错误声称过去日期是未来。'
-            '不要重复相同结论，不确定的对应关系写为待确认。',
+            '不逐条输出笼统的核实提醒。适用地区、年级、第三方宣传等关键限定直接写入summary；caveat留空。不要重复相同结论。',
             {'current_date': datetime.now(timezone.utc).date().isoformat(), 'roles': roles, 'evidence': [dict(id=i, **row) for i, row in enumerate(evidence)]})
         items, seen, summaries = [], set(), set()
         for entry in result.get('items', []):

@@ -40,10 +40,14 @@ interface ChatContainerProps {
   /** 流式 ASR：录音时把每个分片推给后端 */
   onAudioChunk?: (chunk: Uint8Array) => void
   onStopPlayback?: () => void
-  onPlayAudio?: (audioData: string) => void
+  onPlayAudio?: (audioData: string, messageId?: string) => void
   isDisabled?: boolean
   isSending?: boolean
   isConnected?: boolean
+  activeAudioMessageId?: string | null
+  isPausedAudio?: boolean
+  onPauseAudio?: () => void
+  onResumeAudio?: () => void
   isPlayingAudio?: boolean
 }
 
@@ -59,6 +63,10 @@ const ChatContainer = ({
   isDisabled = false,
   isSending = false,
   isConnected = false,
+  activeAudioMessageId,
+  isPausedAudio = false,
+  onPauseAudio,
+  onResumeAudio,
   isPlayingAudio = false
 }: ChatContainerProps) => {
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -85,9 +93,9 @@ const ChatContainer = ({
   }
 
   // Play audio message - delegate to parent (which owns the audioStream)
-  const handlePlayAudio = (audioData: string) => {
+  const handlePlayAudio = (audioData: string, messageId?: string) => {
     if (onPlayAudio) {
-      onPlayAudio(audioData)
+      onPlayAudio(audioData, messageId)
     } else {
       console.warn('[ChatContainer] No onPlayAudio prop provided; cannot play audio.')
     }
@@ -132,8 +140,14 @@ const ChatContainer = ({
             audioData={message.audioData}
             isSending={message.isSending}
             timestamp={message.timestamp}
-            onPlayAudio={message.audioData ? () => handlePlayAudio(message.audioData!) : undefined}
-            isPlayingAudio={isPlayingAudio}
+            onPlayAudio={message.audioData ? () => handlePlayAudio(message.audioData!, message.id) : undefined}
+            isPlayingAudio={isPlayingAudio && activeAudioMessageId === message.id}
+            isPausedAudio={isPausedAudio && activeAudioMessageId === message.id}
+            onToggleAudio={() => {
+              if (activeAudioMessageId === message.id && isPlayingAudio) onPauseAudio?.()
+              else if (activeAudioMessageId === message.id && isPausedAudio) onResumeAudio?.()
+              else if (message.audioData) handlePlayAudio(message.audioData, message.id)
+            }}
             customerLabel={customerLabel}
             knowledgeRefs={message.knowledgeRefs}
           />
@@ -153,12 +167,13 @@ const ChatContainer = ({
         )}
 
         {/* Streaming indicator */}
-        {isPlayingAudio && (
+        {(isPlayingAudio || isPausedAudio) && (
           <div className="flex justify-start">
             <div className="px-4 py-2 rounded-2xl bg-primary/10 text-primary text-sm">
               <span className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
-                AI 正在说话...
+                <div className={`w-2 h-2 bg-primary rounded-full ${isPausedAudio ? '' : 'animate-pulse'}`} />
+                {isPausedAudio ? '语音已暂停' : '语音播放中…'}
+
               </span>
             </div>
           </div>

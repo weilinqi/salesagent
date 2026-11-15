@@ -5,3 +5,7 @@ require('./websocket.test.cjs')
 require('./knowledge.test.cjs')
 
 require('./chatMessageIdentity.test.cjs')
+
+require('./suggestionsVisibility.test.cjs')
+
+require('./audioPause.test.cjs')

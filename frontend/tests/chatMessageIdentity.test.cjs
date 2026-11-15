@@ -14,7 +14,7 @@ function setup() {
   const ref = { current: null }
   const receive = new Function('wsMessage', 'setMessages_', 'currentAIMessageIdRef', 'updatePersona', 'audioStream', js)
   return {
-    send: event => receive(event, update => { messages = update(messages) }, ref, () => {}, { playStoredAudio() {} }),
+    send: event => receive(event, update => { messages = update(messages) }, ref, () => {}, { playStoredAudio() {}, autoPlayStoredAudio() {} }),
     messages: () => messages,
   }
 }

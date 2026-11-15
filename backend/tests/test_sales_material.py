@@ -25,7 +25,8 @@ class MaterialTests(unittest.IsolatedAsyncioTestCase):
         reader = PdfReader(io.BytesIO(render_material(body)))
         text = ''.join(page.extract_text() for page in reader.pages)
         self.assertIn('基础知识与综合训练',text)
-        self.assertIn('适用年级待确认',text)
+        self.assertNotIn('适用年级待确认',text)
+        self.assertIn('信息可能不准确',text)
         self.assertNotIn('某老师履历',text)
         links = [str(a.get_object().get('/A',{}).get('/URI','')) for page in reader.pages for a in page.get('/Annots',[])]
         self.assertEqual(len(links),2)
