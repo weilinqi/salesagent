@@ -206,7 +206,7 @@ const PracticeChatPage = () => {
 
         // Play audio if available (only on first appearance, not on upsert)
         if (audioData && audioData.length > 0) {
-          audioStream.playStoredAudio(audioData)
+          audioStream.autoPlayStoredAudio(audioData, newMsgId)
         }
       }
       return
@@ -221,7 +221,7 @@ const PracticeChatPage = () => {
           m.id === targetId ? { ...m, audioData } : m
         ))
         // Play it once
-        audioStream.playStoredAudio(audioData)
+        audioStream.autoPlayStoredAudio(audioData, targetId)
       }
       return
     } else if (wsMessage.type === 'ai_streaming_update') {
@@ -265,7 +265,7 @@ const PracticeChatPage = () => {
     onMessage: handleMessage,
     onAudioChunk: (chunk) => {
       // Play audio immediately when received
-      audioStream.playChunk(chunk)
+      audioStream.playChunk(chunk, currentAIMessageIdRef.current || undefined)
     },
     onConnected: handleConnected,
     onDisconnected: handleDisconnected
@@ -419,7 +419,7 @@ const PracticeChatPage = () => {
         <div className="flex items-center gap-2 text-sm text-gray-600">
           <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-50 text-green-700 rounded">
             <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-            自由对话中
+            {currentSession?.training_mode === 'rejection' ? '拒绝挽回' : '完整销售对练'}
           </span>
           {currentSession?.persona?.name && (
             <span className="text-gray-500">
@@ -457,6 +457,10 @@ const PracticeChatPage = () => {
             isSending={isSending}
             isConnected={isConnected}
             isPlayingAudio={audioStream.isPlaying}
+            isPausedAudio={audioStream.isPaused}
+            activeAudioMessageId={audioStream.activeMessageId}
+            onPauseAudio={audioStream.pause}
+            onResumeAudio={audioStream.resume}
           />
         </div>
         {/* OR-4: Real-time SPIN Stage Hint Sidebar */}

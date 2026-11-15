@@ -10,13 +10,16 @@ import { useState, useRef, useCallback } from 'react'
 declare const AudioContext: typeof undefined | ((options?: any) => any)
 
 interface UseAudioStreamReturn {
+  activeMessageId: string | null
+  isPaused: boolean
   isPlaying: boolean
   isBuffering: boolean
   currentPosition: number
   duration: number
-  playChunk: (chunk: Uint8Array) => void
+  playChunk: (chunk: Uint8Array, messageId?: string) => void
   playBase64Chunk: (base64: string) => void
-  playStoredAudio: (base64Audio: string) => void
+  autoPlayStoredAudio: (base64Audio: string, messageId: string) => void
+  playStoredAudio: (base64Audio: string, messageId?: string) => void
   stop: () => void
   pause: () => void
   resume: () => void
@@ -24,6 +27,11 @@ interface UseAudioStreamReturn {
 }
 
 export function useAudioStream(): UseAudioStreamReturn {
+  const autoPlayedRef = useRef(new Set<string>())
+  const streamMessageRef = useRef<string | null>(null)
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null)
+  const [isPaused, setIsPaused] = useState(false)
+  const pausedRef = useRef(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isBuffering, setIsBuffering] = useState(false)
   const [currentPosition, setCurrentPosition] = useState(0)
@@ -53,7 +61,7 @@ export function useAudioStream(): UseAudioStreamReturn {
     const ctx = audioCtxRef.current ?? new Ctx()
     audioCtxRef.current = ctx
     // 用户交互后 audioCtx 可能被挂起，需要 resume
-    if (ctx.state === 'suspended') {
+    if (ctx.state === 'suspended' && !pausedRef.current) {
       ctx.resume().catch(() => {})
     }
     return ctx
@@ -61,7 +69,7 @@ export function useAudioStream(): UseAudioStreamReturn {
 
   const drainQueue = useCallback(() => {
     const ctx = audioCtxRef.current
-    if (!ctx) return
+    if (!ctx || pausedRef.current) return
     while (pendingBuffersRef.current.length > 0) {
       const buf = pendingBuffersRef.current.shift()!
       const startAt = Math.max(ctx.currentTime, nextStartTimeRef.current)
@@ -72,10 +80,12 @@ export function useAudioStream(): UseAudioStreamReturn {
       nextStartTimeRef.current = startAt + buf.duration
       // 最后一个 source 结束时设 isPlaying=false
       src.onended = () => {
-        if (pendingBuffersRef.current.length === 0) {
+        if (audioCtxRef.current !== ctx) return
+        if (!pausedRef.current && pendingBuffersRef.current.length === 0 && ctx.currentTime >= nextStartTimeRef.current) {
           // 给 50ms 缓冲看还有没有新 buffer 进来
           setTimeout(() => {
-            if (pendingBuffersRef.current.length === 0) {
+            if (audioCtxRef.current !== ctx) return
+            if (!pausedRef.current && pendingBuffersRef.current.length === 0 && ctx.currentTime >= nextStartTimeRef.current) {
               setIsPlaying(false)
               isPlayingRef.current = false
             }
@@ -87,7 +97,7 @@ export function useAudioStream(): UseAudioStreamReturn {
 
   const processQueue = useCallback(() => {
     console.log('[AudioStream] processQueue called, queue length:', chunkQueueRef.current.length)
-    if (chunkQueueRef.current.length === 0) {
+    if (pausedRef.current || chunkQueueRef.current.length === 0) {
       console.log('[AudioStream] Queue empty, returning')
       return
     }
@@ -108,8 +118,10 @@ export function useAudioStream(): UseAudioStreamReturn {
 
     // Clean up previous audio
     if (audioElementRef.current) {
-      audioElementRef.current.pause()
-      audioElementRef.current.src = ''
+      const previous = audioElementRef.current
+      audioElementRef.current = null
+      previous.pause()
+      previous.src = ''
     }
     if (currentUrlRef.current) {
       URL.revokeObjectURL(currentUrlRef.current)
@@ -127,12 +139,14 @@ export function useAudioStream(): UseAudioStreamReturn {
     audioElementRef.current = audio
 
     audio.onloadedmetadata = () => {
+        if (audioElementRef.current !== audio) return
       console.log('[AudioStream] Metadata loaded, duration:', audio.duration)
       setDuration(audio.duration)
       setIsBuffering(false)
     }
 
     audio.onplay = () => {
+        if (audioElementRef.current !== audio) return
       console.log('[AudioStream] Playing MP3!')
       setIsPlaying(true)
       isPlayingRef.current = true
@@ -140,6 +154,7 @@ export function useAudioStream(): UseAudioStreamReturn {
     }
 
     audio.onended = () => {
+        if (audioElementRef.current !== audio) return
       console.log('[AudioStream] Ended')
       if (!isInterruptedRef.current) {
         setIsPlaying(false)
@@ -149,6 +164,7 @@ export function useAudioStream(): UseAudioStreamReturn {
     }
 
     audio.onerror = () => {
+        if (audioElementRef.current !== audio) return
       console.error('[AudioStream] MP3 Audio error:', audio.error)
       setIsPlaying(false)
       setIsBuffering(false)
@@ -156,12 +172,14 @@ export function useAudioStream(): UseAudioStreamReturn {
     }
 
     audio.ontimeupdate = () => {
+        if (audioElementRef.current !== audio) return
       setCurrentPosition(audio.currentTime)
     }
 
     audio.preload = 'auto'
     console.log('[AudioStream] Calling audio.play()')
     audio.play().catch(err => {
+        if (audioElementRef.current !== audio) return
       console.error('[AudioStream] Play error:', err)
       setIsPlaying(false)
       setIsBuffering(false)
@@ -169,7 +187,14 @@ export function useAudioStream(): UseAudioStreamReturn {
     })
   }, [])
 
-  const playChunk = useCallback((chunk: Uint8Array) => {
+  const playChunk = useCallback((chunk: Uint8Array, messageId?: string) => {
+    if (messageId && streamMessageRef.current !== messageId) {
+      streamMessageRef.current = messageId
+      isInterruptedRef.current = false
+      pausedRef.current = false
+      setIsPaused(false)
+    }
+    if (messageId) setActiveMessageId(messageId)
     const ctx = ensureAudioContext()
     if (!ctx) {
       // Web Audio 不可用：降级用旧逻辑（累积到齐后用 HTML5 Audio 播）
@@ -195,11 +220,12 @@ export function useAudioStream(): UseAudioStreamReturn {
     // 异步 decode
     ctx.decodeAudioData(toDecode.buffer.slice(toDecode.byteOffset, toDecode.byteOffset + toDecode.byteLength))
       .then((audioBuf) => {
-        if (isInterruptedRef.current) return
+        if (isInterruptedRef.current || audioCtxRef.current !== ctx) return
+        if (messageId) autoPlayedRef.current.add(messageId)
         pendingBuffersRef.current.push(audioBuf)
         // 重置 mp3 累积器（已成功解码）
         mp3AccumRef.current = []
-        if (!isPlayingRef.current) {
+        if (!isPlayingRef.current && !pausedRef.current) {
           isPlayingRef.current = true
           setIsPlaying(true)
           if (nextStartTimeRef.current < ctx.currentTime) {
@@ -224,14 +250,25 @@ export function useAudioStream(): UseAudioStreamReturn {
   }, [playChunk])
 
   // Play stored/replayed audio from base64
-  const playStoredAudio = useCallback((base64Audio: string) => {
+  const playStoredAudio = useCallback((base64Audio: string, messageId?: string) => {
+    if (messageId) autoPlayedRef.current.add(messageId)
+    setActiveMessageId(messageId || null)
     console.log('[AudioStream] playStoredAudio called, length:', base64Audio.length)
 
+    pausedRef.current = false
+    setIsPaused(false)
+    void audioCtxRef.current?.close().catch(() => {})
+    audioCtxRef.current = null
+    pendingBuffersRef.current = []
+    mp3AccumRef.current = []
+    nextStartTimeRef.current = 0
     // Stop current playback
     isInterruptedRef.current = true
     if (audioElementRef.current) {
-      audioElementRef.current.pause()
-      audioElementRef.current.src = ''
+      const previous = audioElementRef.current
+      audioElementRef.current = null
+      previous.pause()
+      previous.src = ''
     }
 
     try {
@@ -285,11 +322,13 @@ export function useAudioStream(): UseAudioStreamReturn {
       audioElementRef.current = audio
 
       audio.onloadedmetadata = () => {
+        if (audioElementRef.current !== audio) return
         console.log('[AudioStream] Replay metadata loaded, duration:', audio.duration)
         setDuration(audio.duration)
       }
 
       audio.onplay = () => {
+        if (audioElementRef.current !== audio) return
         console.log('[AudioStream] Replay playing!')
         setIsPlaying(true)
         isPlayingRef.current = true
@@ -297,6 +336,7 @@ export function useAudioStream(): UseAudioStreamReturn {
       }
 
       audio.onended = () => {
+        if (audioElementRef.current !== audio) return
         console.log('[AudioStream] Replay ended')
         setIsPlaying(false)
         setCurrentPosition(0)
@@ -304,6 +344,7 @@ export function useAudioStream(): UseAudioStreamReturn {
       }
 
       audio.onerror = () => {
+        if (audioElementRef.current !== audio) return
         console.error('[AudioStream] Replay error:', audio.error, 'mime:', mime)
         setIsPlaying(false)
         setIsBuffering(false)
@@ -311,11 +352,13 @@ export function useAudioStream(): UseAudioStreamReturn {
       }
 
       audio.ontimeupdate = () => {
+        if (audioElementRef.current !== audio) return
         setCurrentPosition(audio.currentTime)
       }
 
       audio.preload = 'auto'
       audio.play().catch(err => {
+        if (audioElementRef.current !== audio) return
         console.error('[AudioStream] Replay play error:', err)
         setIsPlaying(false)
         setIsBuffering(false)
@@ -326,8 +369,18 @@ export function useAudioStream(): UseAudioStreamReturn {
     }
   }, [])
 
+  // A final/duplicate server update must not restart audio the user paused.
+  const autoPlayStoredAudio = useCallback((audio: string, messageId: string) => {
+    if (!audio || autoPlayedRef.current.has(messageId)) return
+    playStoredAudio(audio, messageId)
+  }, [playStoredAudio])
+
   const stop = useCallback(() => {
     console.log('[AudioStream] stop called')
+    pausedRef.current = false
+    setIsPaused(false)
+    void audioCtxRef.current?.close().catch(() => {})
+    audioCtxRef.current = null
     isInterruptedRef.current = true
 
     if (audioElementRef.current) {
@@ -352,22 +405,35 @@ export function useAudioStream(): UseAudioStreamReturn {
   }, [])
 
   const pause = useCallback(() => {
-    if (audioElementRef.current && isPlayingRef.current) {
-      audioElementRef.current.pause()
-      isPlayingRef.current = false
-      setIsPlaying(false)
-    }
+    if (!isPlayingRef.current) return
+    pausedRef.current = true
+    setIsPaused(true)
+    audioElementRef.current?.pause()
+    void audioCtxRef.current?.suspend().catch(() => {})
+    isPlayingRef.current = false
+    setIsPlaying(false)
   }, [])
 
   const resume = useCallback(() => {
-    if (audioElementRef.current && !isPlayingRef.current) {
-      audioElementRef.current.play()
-      isPlayingRef.current = true
-      setIsPlaying(true)
+    if (!pausedRef.current) return
+    pausedRef.current = false
+    setIsPaused(false)
+    const ctx = audioCtxRef.current
+    if (ctx) {
+      void ctx.resume().then(() => {
+        if (pausedRef.current || audioCtxRef.current !== ctx) return
+        isPlayingRef.current = true
+        setIsPlaying(true)
+        drainQueue()
+      }).catch(() => { pausedRef.current = true; setIsPaused(true) })
+    } else if (audioElementRef.current) {
+      void audioElementRef.current.play().catch(() => { pausedRef.current = true; setIsPaused(true) })
     }
-  }, [])
+  }, [drainQueue])
 
   return {
+    activeMessageId,
+    isPaused,
     isPlaying,
     isBuffering,
     currentPosition,
@@ -375,6 +441,7 @@ export function useAudioStream(): UseAudioStreamReturn {
     playChunk,
     playBase64Chunk,
     playStoredAudio,
+    autoPlayStoredAudio,
     stop,
     pause,
     resume,

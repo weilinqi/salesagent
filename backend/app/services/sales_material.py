@@ -131,15 +131,14 @@ def render_material(body: MaterialRequest):
     for key, value in body.profile.model_dump().items():
         story.append(para(LABELS[key] + '：' + (value or '未填写')))
     story.append(Paragraph('二、公开检索资料', heading))
-    story.append(para(body.background.notice))
+
     if body.background.digest_version:
         if not body.background.insights:
             story.append(para('暂无可靠的整合结果，请查看下方核实说明。'))
         for i, item in enumerate(body.background.insights, 1):
             story.append(para(f'{i}. {item.title}'))
             story.append(para(item.summary))
-            if item.caveat:
-                story.append(para('说明：' + item.caveat))
+
             for source in item.sources:
                 label = source.title + '｜' + (source.date or '日期未提供')
                 story.append(Paragraph('<link href="' + escape(str(source.url), quote=True) + '" color="blue">' + escape(label) + '</link>', style))
@@ -153,9 +152,10 @@ def render_material(body: MaterialRequest):
             story.append(para(f'来源：{row.publisher or urlsplit(str(row.url)).hostname}｜发布日期：{row.date or "未提供"}'))
             story.append(Paragraph('<link href="' + escape(str(row.url), quote=True) + '" color="blue">查看来源原文</link>', style))
             story.append(Spacer(1,8))
-    story.append(Paragraph('三、信息缺口与核实说明', heading))
-    for gap in body.background.gaps or ['请核对来源原文及适用时间，摘要不作为效果承诺。']:
-        story.append(para(gap))
+    for gap in body.background.gaps:
+        if any(word in gap for word in ('失败', '超时', '重试', '未完成', '不可用')):
+            story.append(para(gap))
+    story.append(para('信息可能不准确或存在时效差异，请仔细甄别，并以来源原文及机构最新公布的信息为准。'))
     def footer(canvas, document):
         canvas.setFont(font,9); canvas.drawRightString(A4[0]-42,22,f'第 {document.page} 页')
     doc.build(story,onFirstPage=footer,onLaterPages=footer)

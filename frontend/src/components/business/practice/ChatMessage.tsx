@@ -23,6 +23,8 @@ interface ChatMessageProps {
   audioData?: string  // base64 encoded audio
   isSending?: boolean
   timestamp: string
+  onToggleAudio?: () => void
+  isPausedAudio?: boolean
   onPlayAudio?: () => void
   isPlayingAudio?: boolean
   // For AI messages: show concrete customer name + title@company
@@ -61,6 +63,8 @@ const ChatMessage = ({
   audioData,
   isSending,
   timestamp,
+  onToggleAudio,
+  isPausedAudio,
   onPlayAudio,
   isPlayingAudio,
   customerLabel,
@@ -104,9 +108,8 @@ const ChatMessage = ({
             <div className="mb-3 flex items-center gap-2 bg-white/60 rounded-lg p-2">
               {/* Play/Pause button */}
               <button
-                onClick={onPlayAudio}
-                disabled={isPlayingAudio}
-                aria-label={isPlayingAudio ? '停止播放' : '点击播放'}
+                onClick={onToggleAudio || onPlayAudio}
+                aria-label={isPlayingAudio ? '暂停语音' : isPausedAudio ? '继续播放' : '点击播放'}
                 className={`
                   flex items-center justify-center w-9 h-9 rounded-full
                   transition-all flex-shrink-0 shadow-sm
@@ -117,13 +120,13 @@ const ChatMessage = ({
                 `}
               >
                 {isPlayingAudio ? (
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
                     <rect x="6" y="4" width="4" height="16" />
                     <rect x="14" y="4" width="4" height="16" />
                   </svg>
                 ) : (
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z"/>
+                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M5 2v20l17-10z"/>
                   </svg>
                 )}
               </button>
@@ -153,7 +156,7 @@ const ChatMessage = ({
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                {isPlayingAudio ? '播放中' : '重播'}
+                重播
               </button>
             </div>
           )}
@@ -179,7 +182,7 @@ const ChatMessage = ({
                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
-                {isPlayingAudio ? '播放中' : '重播'}
+                重播
               </button>
             </div>
           )}

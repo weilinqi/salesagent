@@ -34,6 +34,7 @@ export interface CustomerPersona {
 
 // Session type
 interface PracticeSession {
+  training_mode?: 'full' | 'rejection'
   id: string
   scenario_id: string
   status: 'preparing' | 'active' | 'completed'
@@ -159,6 +160,7 @@ export const usePracticeStore = create<PracticeState>()(
       )
       set({
         currentSession: {
+          training_mode: spinContext?.customerContext?.training_mode || 'full',
           id: response.session_id,
           scenario_id: selectedScenario.id,
           status: 'preparing',

@@ -12,7 +12,7 @@ import { usePracticeStore } from '../../stores/practiceStore'
 import { useSpinStore } from '../../stores/spinStore'
 import { useAuth } from '../../contexts/AuthContext'
 import { RoleConfig, PracticeSessionContext } from '../../api/practice'
-import ScenarioCard from '../../components/business/practice/ScenarioCard'
+
 import RoleSelector from '../../components/business/practice/RoleSelector'
 import CustomerPreparation, { PreparationProfile, Background } from '../../components/business/practice/CustomerPreparation'
 
@@ -35,7 +35,6 @@ const PracticePage = () => {
   const { user } = useAuth()
   const {
     scenarios,
-    selectedScenario,
     selectedRoleConfig,
     isLoadingScenarios,
     scenarioError,
@@ -46,6 +45,9 @@ const PracticePage = () => {
     resetSession
   } = usePracticeStore()
 
+  const [trainingMode, setTrainingMode] = useState<'full' | 'rejection'>('full')
+  const [draft, setDraft] = useState<Partial<PreparationProfile>>(initialProfile)
+  const moduleTitle = trainingMode === 'rejection' ? '拒绝挽回' : '完整销售对练'
   const [currentStep, setCurrentStep] = useState<Step>('select')
   const [isStarting, setIsStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
@@ -54,12 +56,6 @@ const PracticePage = () => {
     fetchScenarios()
   }, [fetchScenarios])
 
-  useEffect(() => {
-    if (selectedScenario && currentStep === 'select') {
-      setCurrentStep('configure')
-    }
-  }, [selectedScenario, currentStep])
-
   // Navigate to chat page when session is ready
   useEffect(() => {
     if (currentStep === 'ready' && selectedRoleConfig) {
@@ -67,8 +63,14 @@ const PracticePage = () => {
     }
   }, [currentStep, selectedRoleConfig, navigate])
 
-  const handleScenarioSelect = (scenario: typeof selectedScenario) => {
-    selectScenario(scenario)
+  const chooseModule = (mode: 'full' | 'rejection') => {
+    const template = scenarios[0]
+    if (!template) return
+    resetSession()
+    setTrainingMode(mode)
+    selectScenario(template)
+    setCurrentStep('configure')
+    setStartError(null)
   }
 
   const handleRoleConfigChange = (config: RoleConfig) => {
@@ -81,7 +83,7 @@ const PracticePage = () => {
     try {
       if (!selectedRoleConfig) setRoleConfig({ position_level: 'middle', personality: 'rational', decision_style: 'value_oriented', voice: 'male-qn-qingse' })
       await startSession({
-        customerContext: { industry: profile.industry, scale: '', pain_points: profile.needs ? [profile.needs] : [], preparation: profile, preparation_background: background },
+        customerContext: { training_mode: trainingMode, industry: profile.industry, scale: '', pain_points: profile.needs ? [profile.needs] : [], preparation: profile, preparation_background: background },
         investigationResult: previous?.investigationResult?.company === profile.organization && previous?.investigationResult?.title === profile.target ? previous.investigationResult : undefined,
         userContext: { sales_name: user?.full_name || user?.username || '销售员', practice_goals: [profile.goal] },
       })
@@ -110,7 +112,7 @@ const PracticePage = () => {
       {/* Progress Steps */}
       <div className="max-w-4xl mx-auto px-4 py-6">
         <div className="flex items-center justify-center gap-4">
-          <StepIndicator number={1} label="选择场景" active={currentStep === 'select'} completed={currentStep !== 'select'} />
+          <StepIndicator number={1} label="选择训练模块" active={currentStep === 'select'} completed={currentStep !== 'select'} />
           <div className={`w-12 h-0.5 ${currentStep !== 'select' ? 'bg-primary' : 'bg-gray-300'}`} />
           <StepIndicator number={2} label="介绍推销对象" active={currentStep === 'configure'} completed={currentStep === 'ready'} />
           <div className={`w-12 h-0.5 ${currentStep === 'ready' ? 'bg-primary' : 'bg-gray-300'}`} />
@@ -131,8 +133,8 @@ const PracticePage = () => {
         {currentStep === 'select' && (
           <div>
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">选择练习场景</h2>
-              <span className="text-sm text-gray-500">共 {scenarios.length} 个场景</span>
+              <h2 className="text-lg font-semibold text-gray-900">选择训练模块</h2>
+              <span className="text-sm text-gray-500">2 个训练模块</span>
             </div>
 
             {isLoadingScenarios ? (
@@ -147,13 +149,12 @@ const PracticePage = () => {
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2">
-                {scenarios.map(scenario => (
-                  <ScenarioCard
-                    key={scenario.id}
-                    scenario={scenario}
-                    isSelected={selectedScenario?.id === scenario.id}
-                    onClick={() => handleScenarioSelect(scenario)}
-                  />
+                {([{ mode: 'full', name: '完整销售对练', description: '从初次接触到推进下一步，练习完整销售沟通。' }, { mode: 'rejection', name: '拒绝挽回', description: '从客户拒绝开始，练习了解顾虑、回应异议和争取后续机会。' }] as const).map(module => (
+                  <button type="button" key={module.mode} onClick={() => chooseModule(module.mode)} className="rounded-xl border-2 border-blue-100 bg-white p-6 text-left shadow-sm transition hover:border-blue-600 hover:bg-blue-50 focus-visible:outline-blue-600">
+                    <h3 className="text-xl font-semibold text-blue-800">{module.name}</h3>
+                    <p className="mt-3 text-sm leading-relaxed text-gray-600">{module.description}</p>
+                    <span className="mt-5 block text-sm font-medium text-blue-600">开始准备 →</span>
+                  </button>
                 ))}
               </div>
             )}
@@ -167,7 +168,7 @@ const PracticePage = () => {
               <div>
                 <h2 className="text-lg font-semibold text-gray-900">准备针对性对练</h2>
                 <p className="text-sm text-gray-500 mt-1">
-                  当前场景: <span className="font-medium text-primary">{selectedScenario?.name}</span>
+                  当前模块: <span className="font-medium text-primary">{moduleTitle}</span>
                 </p>
               </div>
               <button
@@ -177,11 +178,11 @@ const PracticePage = () => {
                 }}
                 className="text-sm text-gray-500 hover:text-gray-700"
               >
-                返回选择场景
+                返回选择模块
               </button>
             </div>
 
-            <CustomerPreparation initialProfile={initialProfile} onStart={startPractice} starting={isStarting} />
+            <CustomerPreparation trainingMode={trainingMode} onProfileChange={setDraft} initialProfile={draft} onStart={startPractice} starting={isStarting} />
             <details className="mt-6">
               <summary className="cursor-pointer text-sm text-gray-500">调整模拟角色风格（可选）</summary>
               <RoleSelector selectedConfig={selectedRoleConfig} onChange={handleRoleConfigChange} />
@@ -205,7 +206,7 @@ const PracticePage = () => {
             <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
               <h3 className="font-medium text-gray-700 mb-2">当前配置</h3>
               <div className="space-y-2 text-sm">
-                <p><span className="text-gray-500">场景:</span> {selectedScenario?.name}</p>
+                <p><span className="text-gray-500">场景:</span> {moduleTitle}</p>
                 <p><span className="text-gray-500">角色:</span> {selectedRoleConfig?.position_level} / {selectedRoleConfig?.personality} / {selectedRoleConfig?.decision_style}</p>
               </div>
             </div>
