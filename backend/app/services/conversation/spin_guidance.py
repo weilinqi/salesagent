@@ -33,6 +33,8 @@ SEARCH_TOOL = [{
 class GuidanceState(TypedDict, total=False):
     transcript: str
     phase: str
+    round_number: int
+    previous_guidance: dict[str, Any]
     draft: dict[str, Any]
     tool_call: dict[str, Any]
     references: list[dict[str, Any]]
@@ -50,21 +52,28 @@ def _json_object(text: str) -> dict[str, Any]:
 
 def _coach_prompt(state: GuidanceState) -> list[dict[str, str]]:
     references = state.get("references") or []
+    previous = state.get("previous_guidance") or {}
+    previous_summary = {
+        key: previous.get(key)
+        for key in ("phase", "focus", "parent_facts", "unknowns", "next_step", "reminder", "script")
+        if previous.get(key)
+    }
     facts = "\n".join(
         f"- [{item['source']}] {item['text'][:500]}" for item in references[:4]
     ) or "尚无检索资料"
     return [
         {"role": "system", "content": (
-            "你是上海教培机构销售员工的SPIN实时教练。根据最近对练，简短更新侧栏。"
+            "你是上海教培机构销售员工的SPIN实时教练。每完成一轮销售员与家长的来回，都必须根据最新一轮重新评估并更新侧栏。"
             "仅把家长明确说出的内容列为已知；未知信息放入待了解。不要把推测写成事实。"
+            "将本轮家长新提供的信息加入已知事实，并从待了解中移除已回答项。即使本轮没有新事实，也要结合销售员刚才的提问或回应，调整焦点、下一步和提醒，不能原样重复上一轮。"
             "请为家长表达的真实顾虑给一个短、具体、可立即照做的提醒；没有明显问题就给正向下一步。"
             "如果对话明确涉及具体学校、课程、价格、校区、退费/请假规则，或需要引用话术依据，"
             "先调用 search_knowledge 检索；普通寒暄和一般沟通不检索。若与上次资料主题相同，沿用已有资料，不要重复检索；只有主题发生变化或此前资料明显不适用时才再次检索。拿到工具结果后再输出。"
             "只能引用检索结果；无结果时明确写‘知识库未找到相关资料’，禁止补造。"
             "最终只输出JSON：{phase, focus, parent_facts:[...], unknowns:[...], next_step, reminder, script, references:[{source,text}], not_found}。"
-            "focus/next_step/reminder/script简短。references只能来自工具结果。phase取Situation/Problem/Implication/Need-payoff之一。"
+            "focus/next_step/reminder/script简短且针对本轮。parent_facts和unknowns必须反映完整近期对话，不得丢弃仍有效的已知事实。references只能来自工具结果或传入的上一轮已核实资料。phase取Situation/Problem/Implication/Need-payoff之一。"
         )},
-        {"role": "user", "content": f"当前阶段：{state.get('phase', 'discovery')}\n上次检索主题：{state.get('last_search_query') or '无'}\n最近对话：\n{state['transcript']}\n检索资料：\n{facts}"},
+        {"role": "user", "content": f"这是第 {state.get('round_number', 0)} 轮完整对话。\n当前阶段：{state.get('phase', 'discovery')}\n上一轮侧栏：{json.dumps(previous_summary, ensure_ascii=False)}\n上次检索主题：{state.get('last_search_query') or '无'}\n最近对话：\n{state['transcript']}\n已核实资料：\n{facts}"},
     ]
 
 
@@ -155,6 +164,7 @@ def _normalize(result: dict[str, Any]) -> dict[str, Any]:
         "not_found": bool(result.get("search_attempted")) and not clean_refs,
         "searched": bool(result.get("search_attempted")),
         "search_error": bool(result.get("search_error")),
+        "round_number": int(result.get("round_number") or 0),
         "last_search_query": result.get("last_search_query", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -164,18 +174,25 @@ async def update_guidance(session_id: str) -> dict[str, Any] | None:
     """Run a bounded tool-calling LangGraph agent and publish to the active socket."""
     from app.websocket.manager import manager, session_manager
 
-    context = session_manager.get_context(session_id) or []
-    recent = context[-12:]
-    transcript = "\n".join(
-        f"{'家长' if row.get('role') == 'ai' else '销售'}：{str(row.get('content') or '')[:280]}"
-        for row in recent if row.get("role") in ("user", "ai", "assistant")
-    )[-3600:]
-    info = session_manager.get_session_info(session_id) or {}
-    phase = info.get("current_phase") or "discovery"
     try:
         previous = getattr(manager, "_spin_guidance", {}).get(session_id, {})
-        result = await _graph.ainvoke({"transcript": transcript, "phase": phase, "references": [],
-                                        "last_search_query": previous.get("last_search_query", "")},
+        context = session_manager.get_context(session_id) or []
+        recent = context[-20:]
+        transcript = "\n".join(
+            f"{'家长' if row.get('role') == 'ai' else '销售'}：{str(row.get('content') or '')[:420]}"
+            for row in recent if row.get("role") in ("user", "ai", "assistant")
+        )[-6000:]
+        round_number = sum(1 for row in context if row.get("role") == "user")
+        info = session_manager.get_session_info(session_id) or {}
+        phase = info.get("current_phase") or "discovery"
+        result = await _graph.ainvoke({
+                                        "transcript": transcript,
+                                        "phase": phase,
+                                        "round_number": round_number,
+                                        "previous_guidance": previous,
+                                        "references": previous.get("references", []),
+                                        "last_search_query": previous.get("last_search_query", ""),
+                                    },
                                       config={"recursion_limit": 5})
         guidance = _normalize(result)
         states = getattr(manager, "_spin_guidance", None)

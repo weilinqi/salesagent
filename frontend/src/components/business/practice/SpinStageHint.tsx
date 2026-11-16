@@ -13,10 +13,12 @@ interface Guidance {
   isInitial?: boolean
   last_search_query?: string
   updated_at?: string
+  round_number?: number
 }
 
 interface Props {
   guidance: Guidance
+  updateStatus?: 'updating' | 'updated' | 'error' | null
   className?: string
 }
 
@@ -25,13 +27,21 @@ const stageName: Record<string, string> = {
   Implication: '影响探索', 'Need-payoff': '需求与价值',
 }
 
-export default function SpinStageHint({ guidance, className = '' }: Props) {
+export default function SpinStageHint({ guidance, updateStatus, className = '' }: Props) {
   return (
     <div className={`space-y-3 ${className}`}>
       <section className="rounded-lg border border-blue-200 bg-blue-50 p-3">
         <div className="mb-1 flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-blue-700">{stageName[guidance.phase] || guidance.phase}</span>
-          <span className="text-[10px] text-blue-600">{guidance.isInitial ? '开场提示' : '实时更新'}</span>
+          <span className={`text-[10px] ${updateStatus === 'error' ? 'text-amber-700' : 'text-blue-600'}`}>
+            {updateStatus === 'updating'
+              ? '本轮分析中…'
+              : updateStatus === 'error'
+                ? '本轮更新失败'
+                : guidance.isInitial
+                  ? '开场提示'
+                  : `第 ${guidance.round_number || 1} 轮 · ${guidance.updated_at ? new Date(guidance.updated_at).toLocaleTimeString() : '实时更新'}`}
+          </span>
         </div>
         <p className="text-sm font-medium text-gray-900">{guidance.focus}</p>
         <h3 className="mt-3 text-xs font-semibold text-gray-600">家长已表达</h3>
