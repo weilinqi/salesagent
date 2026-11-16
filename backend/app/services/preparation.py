@@ -90,13 +90,20 @@ async def collect_information(profile, message):
     questions = [f'请补充{LABELS[key]}。' for key in missing[:2]]
     return {'profile': updated.model_dump(), 'questions': questions, 'ready': updated.ready, 'warning': warning, 'success': success}
 
-async def lookup_overview(organization):
+async def lookup_overview(organization, rows=None):
     """Keep one sourced profile fact; missing qualifications remain unknown."""
-    query = organization + ' 背景概况 官方简介 企业影响力 学校层次 个人成就 排名榜单年份'
-    try:
-        rows = await asyncio.wait_for(search_via_mcp(query, 6), timeout=12)
-    except Exception:
-        return None
+    from app.services.research_digest import entity_matches
+    if rows is None:
+        query = organization + ' 背景概况 官方简介 企业影响力 学校层次 个人成就 排名榜单年份'
+        try:
+            rows = await asyncio.wait_for(search_via_mcp(query, 6), timeout=12)
+        except Exception:
+            return None
+    candidates = []
+    profile_terms = ('简介', '概况', '办学', '校史', '沿革', '创办', '成立', '主营', '业务', '发展', '总部',
+                     '品牌', '上市', '门店', '经营', '规模', '集团', '餐饮', '火锅', '汽车', '新能源',
+                     '航空', '物流', '制造', '研发', '能源', '学校介绍', '教育局', '211', '985', '双一流', '重点')
+    authority_terms = ('官网', '官方', '政府', '教育局', '教育考试院', 'hkex', 'gov.cn')
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
@@ -106,7 +113,7 @@ async def lookup_overview(organization):
         corpus = title + ' ' + summary
         if not isinstance(url, str) or not url.startswith(('https://', 'http://')) or not summary:
             continue
-        if organization.lower() not in corpus.lower():
+        if not entity_matches(organization, corpus):
             continue
         if any(term in corpus.lower() for term in ('评价', '评论', '口碑', '好评', '差评', '测评', '投诉', 'review', 'rating')):
             continue
@@ -114,8 +121,6 @@ async def lookup_overview(organization):
         if re.search(r'排名|\d+强|rank|top\s*\d+', corpus, re.I):
             if not re.search(r'(?:19|20)\d{2}', corpus) or not any(term in corpus.lower() for term in ('财富', 'fortune', '福布斯', 'forbes', 'qs', '泰晤士', '软科', 'us news', 'u.s. news')):
                 continue
-        if not any(term in corpus for term in ('简介', '概况', '影响力', '强', '211', '985', '双一流', '重点', '示范', '成就', '获奖', '院士', '创始人', '主营', '成立')):
-            continue
         # Use whole sentences so dates and qualification names are not cut mid-claim.
         sentences = re.split(r'(?<=[。！？；])', summary)
         selected = []
@@ -128,8 +133,15 @@ async def lookup_overview(organization):
             continue
         if re.search(r'排名|\d+强|rank|top\s*\d+', title + short, re.I) and not re.search(r'(?:19|20)\d{2}', title + short):
             continue
-        return {'title': title, 'summary': short, 'url': url}
-    return None
+        lowered = corpus.casefold()
+        score = sum(3 for term in profile_terms if term.casefold() in lowered)
+        score += sum(2 for term in authority_terms if term.casefold() in lowered or term.casefold() in url.casefold())
+        score += min(len(summary) // 120, 2)
+        if any(term in lowered for term in ('招聘', '校招', '招募', '招聘公告', '活动报名')):
+            score -= 4
+        if score > 0:
+            candidates.append((score, {'title': title, 'summary': short, 'url': url}))
+    return max(candidates, key=lambda candidate: candidate[0])[1] if candidates else None
 
 
 async def lookup_background(organization, product='', needs=''):

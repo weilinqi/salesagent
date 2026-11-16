@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, HttpUrl
 from app.services.preparation import PreparationProfile, LABELS, lookup_overview
 from app.services.search import search_via_mcp, SearchUnavailable
-from app.services.research_digest import identify_roles, make_plans, summarize
+from app.services.research_digest import identify_roles, make_plans, summarize, entity_matches
 
 class MaterialSource(BaseModel):
     title: str = Field(max_length=300)
@@ -35,6 +35,7 @@ class MaterialBackground(BaseModel):
     checked_at: str = Field(default='', max_length=100)
     gaps: list[str] = Field(default_factory=list, max_length=10)
     search_key: str = Field(default='', max_length=5000)
+    basic_background: str = Field(default='', max_length=1200)
 
 class MaterialRequest(BaseModel):
     profile: PreparationProfile
@@ -74,6 +75,12 @@ async def research(organization='', product='', needs='', target=''):
             return '搜索连接失败，请稍后重试。'
     outcomes = await asyncio.gather(*(search(p) for p in plans))
     overview = None
+    customer = roles.get('customer')
+    if customer:
+        background_rows = [row for plan, rows in zip(plans, outcomes)
+                           if plan[0] == '机构背景' and isinstance(rows, list)
+                           for row in rows]
+        overview = await lookup_overview(customer, background_rows)
     sources, gaps, seen = [], [], set()
     grades = set(re.findall(r'高[一二三]|初[一二三]|[一二三四五六]年级', target + needs))
     for plan, rows in zip(plans, outcomes):
@@ -83,12 +90,15 @@ async def research(organization='', product='', needs='', target=''):
             title, summary = str(row.get('title','')), str(row.get('snippet',''))
             corpus = title + ' ' + summary
             if plan[0] == '通用课程参考' and not any(t in corpus for t in ('课程标准', '教学大纲', '学习目标', '教育部', '教育委员会')): continue
-            if plan[0] == '机构背景' and not any(t in corpus for t in ('简介', '概况', '成立', '主营', '培养', '示范', '重点')): continue
+            if plan[0] == '机构背景' and not any(t in corpus for t in (
+                '简介', '概况', '成立', '主营', '培养', '示范', '重点', '办学', '校史', '招生', '发展',
+                '总部', '品牌', '上市', '门店', '经营', '规模', '集团', '业务', '餐饮', '火锅', '汽车',
+                '新能源', '航空', '航线', '客运', '物流', '制造', '研发', '能源', '创办', '沿革', '学校介绍')): continue
             url = row.get('url') or row.get('link') or ''
             parts = urlsplit(url) if isinstance(url, str) else None
             if not parts or parts.scheme not in ('https','http') or not parts.hostname or not summary: continue
             # Exact supplied entity/product name; never accept a partial same-name match.
-            if plan[2].casefold() not in corpus.casefold(): continue
+            if plan[2] and not entity_matches(plan[2], corpus): continue
             if plan[3] and not any(s in corpus for s in plan[3]): continue
             row_grades = set(re.findall(r'高[一二三]|初[一二三]|[一二三四五六]年级', corpus))
             if plan[0] not in ('产品资料', '课程衔接', '产品适配', '机构背景') and grades and row_grades and not grades.intersection(row_grades): continue
@@ -109,6 +119,11 @@ async def research(organization='', product='', needs='', target=''):
         gaps.append('已检索到资料，但暂未完成可靠概括，请重试；未将零散摘要充作整理结果。')
     return dict(organization=roles.get('customer') or organization, overview=overview,
         roles=roles, insights=insights, digest_version=1, sources=sources[:12], gaps=list(dict.fromkeys(gaps))[:10],
+        basic_background=('公开资料尚未提供可核验的机构背景时，当前已知情景信息为：' +
+            '；'.join(f'{label}：{value.strip()}' for label, value in (
+                ('机构/公司', organization), ('产品或服务', product), ('对象身份', target), ('需求与场景', needs))
+                if value and value.strip()) +
+            '。以上仅为使用者填写内容，不代表已核实的机构事实。'),
         checked_at=datetime.now(timezone.utc).isoformat(), search_key=search_key(organization,product,needs,target),
         notice='围绕客户机构、产品和需求整合，最多5个方面；依据公开检索摘要，未逐篇核实原文。各条保留出处，适用范围及最新安排请以原文为准。')
 
@@ -133,6 +148,12 @@ def render_material(body: MaterialRequest):
     story.append(Paragraph('二、公开检索资料', heading))
 
     if body.background.digest_version:
+        if body.background.overview:
+            story.append(para('机构背景｜' + body.background.overview.title))
+            story.append(para(body.background.overview.summary))
+            story.append(Paragraph('<link href="' + escape(str(body.background.overview.url), quote=True) + '" color="blue">查看机构背景来源</link>', style))
+        elif body.background.basic_background:
+            story.append(para(body.background.basic_background))
         if not body.background.insights:
             story.append(para('暂无可靠的整合结果，请查看下方核实说明。'))
         for i, item in enumerate(body.background.insights, 1):
