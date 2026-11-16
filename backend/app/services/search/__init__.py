@@ -55,7 +55,7 @@ async def _search_once(query: str, num_results: int, key: str) -> list:
         return []
     if not key:
         raise SearchUnavailable("尚未配置 MiniMax 搜索密钥。")
-    host = (settings.MINIMAX_SEARCH_API_HOST or settings.MINIMAX_API_HOST).rstrip("/")
+    host = (getattr(settings, "MINIMAX_SEARCH_API_HOST", None) or settings.MINIMAX_API_HOST).rstrip("/")
     if host not in {"https://api.minimaxi.com", "https://api.minimax.io"}:
         raise SearchUnavailable("MiniMax 搜索地址必须使用中国站或国际站官方地址。")
 

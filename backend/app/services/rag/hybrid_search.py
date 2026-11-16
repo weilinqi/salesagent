@@ -118,6 +118,6 @@ async def hybrid_search(request, semantic_search, keyword_search, web_search) ->
         except Exception:
             notices.append('MiniMax 联网搜索暂不可用，请检查搜索密钥、搜索权限或网络后重试。本地结果仍可使用。')
     if local_failed and not web:
-        notices.append('本地知识库检索不可用，且没有可展示的联网结果；请检查知识库索引、搜索密钥和网络配置。')
+        raise RuntimeError('Knowledge retrieval unavailable')
     return {'results': local, 'query': request.query, 'total': len(local),
             'web_results': web, 'notices': notices, 'mode': request.mode}

@@ -53,7 +53,7 @@ export interface InvestigationContext {
 export interface PracticeSessionContext {
   customerContext?: CustomerContext
   investigationResult?: InvestigationContext
-  userContext?: object
+  userContext?: Record<string, unknown>
 }
 
 export interface PracticeSessionDetail {
@@ -184,7 +184,7 @@ const api = {
     roleConfig: RoleConfig,
     customerContext?: CustomerContext,
     investigationResult?: InvestigationContext,
-    userContext?: object
+    userContext?: Record<string, unknown>
   ): Promise<SessionCreateResponse> {
     const response = await axios.post(`${API_BASE}/practice/sessions`, {
       scenario_id: scenarioId,

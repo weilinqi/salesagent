@@ -147,7 +147,7 @@ export default function PracticeMaterialsPanel({
     if (loadDeletedIds(sessionId).includes(initialItem.id)) return
     setHistory(previous => {
       const oldItem = previous.find(item => item.id === PREPARATION_ID)
-      if (oldItem?.query === initialItem.query && oldItem.loaded) return previous
+      if (oldItem && oldItem.query === initialItem.query && oldItem.loaded) return previous
       return upsertItem(previous, initialItem)
     })
   }, [initialItem])
