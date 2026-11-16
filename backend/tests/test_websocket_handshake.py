@@ -14,6 +14,15 @@ import app.main as main
 real_opening = main._init_persona_and_first_message
 
 async def no_opening(*args,**kwargs):pass
+
+def receive_without_spin_guidance(ws):
+ while True:
+  message=ws.receive_json()
+  # SPIN guidance is an unsolicited side-channel update and may arrive while
+  # the test is waiting for a response to a control message.
+  if message.get('type') not in ('spin_guidance','spin_guidance_status'):
+   return message
+
 class HandshakeTests(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.engine=create_engine('sqlite:///'+str(pathlib.Path(self.tmp.name)/'ws.db'),connect_args={'check_same_thread':False});Base.metadata.create_all(self.engine);self.sessions=sessionmaker(bind=self.engine)
@@ -103,8 +112,8 @@ class HandshakeTests(unittest.TestCase):
     with self.client.websocket_connect('/ws/practice/'+self.sid,subprotocols=['salesagent','bearer.'+create_access_token(self.uid)]) as ws:
      self.assertEqual(ws.receive_json()['type'],'status_update')
      ws.send_json({'type':'stop_playback'})
-     self.assertEqual(ws.receive_json()['type'],'status_update')
-     self.assertEqual(ws.receive_json()['type'],'playback_stopped')
+     self.assertEqual(receive_without_spin_guidance(ws)['type'],'status_update')
+     self.assertEqual(receive_without_spin_guidance(ws)['type'],'playback_stopped')
      info=main.session_manager.get_session_info(self.sid)
      self.assertEqual([m['content'] for m in info['context']],['Saved question','Saved answer'])
      self.assertEqual(info['persona']['name'],'Saved persona')
