@@ -36,6 +36,7 @@ export interface CustomerContext {
   training_mode?: 'full' | 'rejection'
   preparation_background?: import('../components/business/practice/CustomerPreparation').Background
   preparation?: import('../components/business/practice/CustomerPreparation').PreparationProfile
+  preparation_pdf?: { filename: string; created_at: string }
   industry: string
   scale: string
   pain_points: string[]
@@ -72,6 +73,7 @@ export interface PracticeMessage {
   id: string
   role: 'user' | 'ai' | 'assistant' | 'system'
   content: string
+  audio_url?: string | null
   created_at: string
 }
 
@@ -192,6 +194,22 @@ const api = {
       user_context: userContext,
     })
     return response.data
+  },
+
+  async saveSessionPreparationPdf(
+    sessionId: string,
+    profile: import('../components/business/practice/CustomerPreparation').PreparationProfile,
+    background: import('../components/business/practice/CustomerPreparation').Background,
+  ): Promise<{ status: string; filename: string }> {
+    const response = await axios.post(`${API_BASE}/practice/sessions/${sessionId}/preparation/material`, { profile, background })
+    return response.data
+  },
+
+  async getSessionPreparationPdf(sessionId: string, signal?: AbortSignal): Promise<{ blob: Blob; filename: string }> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}/preparation/material.pdf`, {
+      responseType: 'blob', signal,
+    })
+    return { blob: response.data, filename: '对话前销售资料.pdf' }
   },
 
   /**

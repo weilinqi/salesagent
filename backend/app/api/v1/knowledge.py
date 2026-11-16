@@ -1,10 +1,12 @@
 """Authenticated knowledge access and administrator PDF ingestion."""
 import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -30,6 +32,7 @@ _pdf_parser = PDFParser()
 _text_chunker = TextChunker(chunk_size=500, overlap=50)
 _embedding_service = EmbeddingService()
 _vector_store = VectorStore(use_milvus=False)
+MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 def require_knowledge_admin(user=Depends(get_current_user)):
@@ -61,9 +64,10 @@ def resolve_knowledge_pdf(file_path: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid document path") from None
 
 
-def _queue_document(db: Session, pdf_path: Path, category: str) -> KnowledgeDocument:
+def _queue_document(db: Session, pdf_path: Path, category: str,
+                    display_name: str | None = None) -> KnowledgeDocument:
     root = Path(settings.KNOWLEDGE_DATA_DIR).resolve()
-    document = KnowledgeDocument(name=pdf_path.name, source_type="pdf", category=category,
+    document = KnowledgeDocument(name=display_name or pdf_path.name, source_type="pdf", category=category,
                                  file_path=str(pdf_path.relative_to(root)), status="queued")
     db.add(document)
     db.commit()
@@ -162,11 +166,15 @@ def recover_interrupted_ingestions() -> int:
 def _search_result(result: dict) -> KnowledgeSearchResult:
     # A legacy vector record may contain an absolute source/full_path.
     source = Path(PureWindowsPath(result.get("source", "")).name).name
+    raw_metadata = result.get("metadata", {})
+    document_id = raw_metadata.get("document_id") if isinstance(raw_metadata, dict) else None
+    if not isinstance(document_id, str):
+        document_id = None
     allowed = {"category", "chapter", "section", "spin_stage", "page", "page_count", "source"}
-    metadata = {key: value for key, value in result.get("metadata", {}).items() if key in allowed}
+    metadata = {key: value for key, value in raw_metadata.items() if key in allowed} if isinstance(raw_metadata, dict) else {}
     if "source" in metadata:
         metadata["source"] = source
-    return KnowledgeSearchResult(id=result["id"], text=result["text"], source=source,
+    return KnowledgeSearchResult(id=result["id"], text=result["text"], source=source, document_id=document_id,
                                  score=result["score"], metadata=metadata)
 
 
@@ -210,6 +218,42 @@ async def ingest_document_endpoint(request: KnowledgeIngestRequest, background_t
                                    message="Document queued for processing")
 
 
+@router.post("/documents/upload", response_model=KnowledgeIngestResponse,
+             dependencies=[Depends(require_knowledge_admin)])
+async def upload_knowledge_pdf(background_tasks: BackgroundTasks,
+                               file: UploadFile = File(...),
+                               category: str = Form("general"),
+                               db: Session = Depends(get_db)):
+    """Store an uploaded original PDF inside the knowledge directory and ingest it."""
+    filename = Path(PureWindowsPath(file.filename or "").name).name
+    if not filename or Path(filename).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    category = category.strip()
+    if not category or len(category) > 128:
+        raise HTTPException(status_code=400, detail="Invalid document category")
+    contents = await file.read(MAX_PDF_UPLOAD_BYTES + 1)
+    if len(contents) > MAX_PDF_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="PDF must be 50 MB or smaller")
+    if not contents.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid PDF")
+
+    root = Path(settings.KNOWLEDGE_DATA_DIR).resolve()
+    upload_dir = root / "uploaded" / uuid.uuid4().hex
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    stored_path = upload_dir / filename
+    try:
+        stored_path.write_bytes(contents)
+        document = _queue_document(db, stored_path, category, display_name=filename)
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+    background_tasks.add_task(ingest_document, document.id)
+    return KnowledgeIngestResponse(document_id=document.id, status="queued", chunk_count=0,
+                                   message="PDF uploaded and queued for processing")
+
+
 @router.get("/documents", response_model=list[DocumentResponse])
 async def list_documents(db: Session = Depends(get_db)):
     return db.query(KnowledgeDocument).order_by(KnowledgeDocument.created_at, KnowledgeDocument.id).all()
@@ -221,6 +265,19 @@ async def get_document(doc_id: str, db: Session = Depends(get_db)):
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
+
+
+@router.get("/documents/{doc_id}/pdf")
+async def get_original_document_pdf(doc_id: str, db: Session = Depends(get_db)):
+    """Serve the original ingested PDF to authenticated knowledge users."""
+    document = db.get(KnowledgeDocument, doc_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.source_type != "pdf":
+        raise HTTPException(status_code=404, detail="Original PDF is unavailable")
+    path = resolve_knowledge_pdf(document.file_path)
+    return FileResponse(path, media_type="application/pdf", filename=Path(document.name).name,
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/stats", response_model=KnowledgeStats)

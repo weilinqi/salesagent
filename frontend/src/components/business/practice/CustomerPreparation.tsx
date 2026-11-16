@@ -47,7 +47,13 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
     const timer = setTimeout(() => {
       axios.post<Background>('/api/v1/practice/preparation/background', { organization: profile.organization.trim(), product: profile.product, needs: profile.needs, target: profile.target }, { signal: controller.signal, timeout: 45000 })
         .then(({ data }) => { if (!controller.signal.aborted) { setBackground(data); if (data.insights?.length) { if (cache.current.size >= 10) cache.current.delete(cache.current.keys().next().value!); cache.current.set(cacheKey, { data, at: Date.now() }) } } })
-        .catch(() => { if (!controller.signal.aborted) setBackground({ organization: profile.organization.trim(), sources: [], notice: '暂无可靠资料，可继续补充或直接进入对练。' }) })
+        .catch(() => { if (!controller.signal.aborted) setBackground({
+          organization: profile.organization.trim(), sources: [],
+          notice: '公开资料检索暂不可用；此 PDF 只保留已确认信息，不代表已核实课程、价格或规则。',
+          gaps: ['公开资料检索暂不可用，课程、价格与规则需要后续核实。'],
+          checked_at: new Date().toISOString(),
+          search_key: [profile.organization, profile.product, profile.needs, profile.target].map(value => value.trim()).join('\n'),
+        }) })
         .finally(() => { if (!controller.signal.aborted) setSearching(false) })
     }, 500)
     return () => { clearTimeout(timer); controller.abort() }
@@ -78,7 +84,7 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
   }
 
   async function start() {
-    if (!ready || starting) return
+    if (!ready || starting || searching) return
     generation.current++; request.current?.abort(); setBusy(false)
     await onStart(Object.fromEntries(fields.map(([key]) => [key, current.current[key].trim()])) as PreparationProfile, background?.search_key === [current.current.organization, current.current.product, current.current.needs, current.current.target].map(value => value.trim()).join('\n') ? background : undefined)
   }
@@ -111,6 +117,6 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
     </div>
     {profile.product.trim() && profile.target.trim() && <SalesSuggestions key={trainingMode + JSON.stringify(profile)} trainingMode={trainingMode} profile={profile} />}
     <p className="text-xs text-gray-500">未填资料保持未知。模拟设定：客户沟通谨慎、适度追问，依据你的回应调整态度。</p>
-    {ready ? <button type="button" disabled={starting} onClick={() => void start()} className="w-full rounded-lg bg-primary p-3 font-medium text-white disabled:opacity-40">{starting ? '正在进入对练…' : '直接进入对练'}</button> : <p className="text-sm text-gray-500">明确产品或服务、对象身份、练习目标后，即可直接进入对练。</p>}
+    {ready ? <button type="button" disabled={starting || searching} onClick={() => void start()} className="w-full rounded-lg bg-primary p-3 font-medium text-white disabled:opacity-40">{searching ? '正在准备对话前资料…' : starting ? '正在进入对练…' : '直接进入对练'}</button> : <p className="text-sm text-gray-500">明确产品或服务、对象身份、练习目标后，即可直接进入对练。</p>}
   </section>
 }

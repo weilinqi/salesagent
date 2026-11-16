@@ -75,6 +75,7 @@ class KnowledgeSearchResult(BaseModel):
     id: str
     text: str = Field(..., description="Chunk text content")
     source: str = Field(..., description="Source document name")
+    document_id: Optional[str] = None
     score: float = Field(..., description="Relevance score (0-1)")
     metadata: Dict = Field(default_factory=dict, description="Additional metadata")
 

@@ -1,6 +1,3 @@
-import PracticeMaterialsPanel from './PracticeMaterialsPanel'
-import type { Background, PreparationProfile } from './CustomerPreparation'
-
 interface Guidance {
   phase: string
   focus: string
@@ -21,9 +18,6 @@ interface Guidance {
 interface Props {
   guidance: Guidance
   className?: string
-  sessionId?: string
-  preparationProfile?: PreparationProfile
-  preparationBackground?: Background
 }
 
 const stageName: Record<string, string> = {
@@ -31,7 +25,7 @@ const stageName: Record<string, string> = {
   Implication: '影响探索', 'Need-payoff': '需求与价值',
 }
 
-export default function SpinStageHint({ guidance, className = '', sessionId, preparationProfile, preparationBackground }: Props) {
+export default function SpinStageHint({ guidance, className = '' }: Props) {
   return (
     <div className={`space-y-3 ${className}`}>
       <section className="rounded-lg border border-blue-200 bg-blue-50 p-3">
@@ -64,17 +58,6 @@ export default function SpinStageHint({ guidance, className = '', sessionId, pre
           <h3 className="text-xs font-semibold text-gray-700">参考话术（AI建议）</h3>
           <p className="mt-1 rounded bg-gray-50 p-2 text-xs text-gray-700">“{guidance.script}”</p>
         </div>
-        <PracticeMaterialsPanel
-          sessionId={sessionId}
-          profile={preparationProfile}
-          background={preparationBackground}
-          references={guidance.references}
-          searched={guidance.searched}
-          notFound={guidance.not_found}
-          searchError={guidance.search_error}
-          searchQuery={guidance.last_search_query}
-          updatedAt={guidance.updated_at}
-        />
       </section>
     </div>
   )

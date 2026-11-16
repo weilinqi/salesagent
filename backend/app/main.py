@@ -9,6 +9,9 @@ import base64
 import asyncio
 import logging
 import ssl
+import uuid
+import wave
+import io
 from pathlib import Path
 import websockets
 from datetime import datetime
@@ -219,19 +222,50 @@ async def safe_send_status(session_id: str, state, metadata: dict = None) -> Non
         pass
 
 
-def save_message_to_db(session_id: str, role: str, content: str) -> None:
-    """Persist a single chat message to the database."""
+def save_message_to_db(session_id: str, role: str, content: str,
+                       audio_bytes: bytes = None, audio_mime: str = None,
+                       message_id: str = None) -> Optional[str]:
+    """Persist a chat message and its optional replayable audio file."""
+    db = None
+    audio_path = None
     try:
         db = SessionLocal()
-        db.add(PracticeMessage(session_id=session_id, role=role, content=content))
+        message = (db.query(PracticeMessage).filter(
+            PracticeMessage.id == message_id,
+            PracticeMessage.session_id == session_id,
+        ).first() if message_id else None)
+        if message is None:
+            message = PracticeMessage(id=str(uuid.uuid4()), session_id=session_id,
+                                      role=role, content=content)
+            db.add(message)
+        else:
+            message.content = content
+        if audio_bytes:
+            extension = {
+                "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav",
+                "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a",
+                "audio/x-m4a": "m4a",
+            }.get((audio_mime or "").split(";", 1)[0].strip().lower())
+            if extension:
+                session_directory = str(uuid.UUID(session_id))
+                audio_root = Path(settings.PRACTICE_AUDIO_DIR).resolve()
+                audio_path = audio_root / session_directory / f"{message.id}.{extension}"
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                audio_path.write_bytes(audio_bytes)
+                message.audio_url = audio_path.relative_to(audio_root).as_posix()
         db.commit()
+        return message.id
     except Exception as e:
         print(f"[DB] Failed to save message: {e}")
+        if audio_path is not None:
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return None
     finally:
-        try:
+        if db is not None:
             db.close()
-        except Exception:
-            pass
 
 
 async def send_ai_audio(websocket, session_id: str, text: str,
@@ -312,9 +346,11 @@ async def process_user_message(websocket, session_id: str, content: str,
     #   3. Local faster-whisper (small) — offline fallback
     user_text = content
     asr_ok = False
+    user_audio_bytes = None
     if audio_data:
         try:
             audio_bytes = base64.b64decode(audio_data)
+            user_audio_bytes = audio_bytes
             mime = audio_mime or "audio/webm"
             print(f"[ASR] decoding {len(audio_bytes)} bytes, mime={mime}")
             est_seconds = len(audio_bytes) / 32000
@@ -368,7 +404,7 @@ async def process_user_message(websocket, session_id: str, content: str,
         })
 
     session_manager.add_message(session_id, "user", user_text)
-    save_message_to_db(session_id, "user", user_text)
+    save_message_to_db(session_id, "user", user_text, user_audio_bytes, audio_mime)
 
     if not minimax.api_key:
         await _send_mock_response(session_id, "抱歉，我现在无法回答。请确保API密钥已正确配置。")
@@ -428,6 +464,7 @@ async def process_user_message(websocket, session_id: str, content: str,
         )
 
         full_response = result.get("full_response", "")
+        ai_audio_data = result.get("audio_data") or ""
         refs = result.get("knowledge_refs", [])
         if refs:
             if not hasattr(manager, '_knowledge_refs'):
@@ -435,7 +472,11 @@ async def process_user_message(websocket, session_id: str, content: str,
             manager._knowledge_refs.setdefault(session_id, []).extend(refs)
         if full_response:
             session_manager.add_message(session_id, "ai", full_response)
-            save_message_to_db(session_id, "ai", full_response)
+            try:
+                ai_audio_bytes = base64.b64decode(ai_audio_data) if ai_audio_data else None
+            except (ValueError, TypeError):
+                ai_audio_bytes = None
+            save_message_to_db(session_id, "ai", full_response, ai_audio_bytes, "audio/mpeg")
         if user_text:
             guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
             if guidance_tasks is None:
@@ -610,7 +651,7 @@ async def _init_persona_and_first_message(websocket, session_id: str,
             first_text_with_tags = first_text
 
         session_manager.add_message(session_id, "ai", first_text_with_tags)
-        save_message_to_db(session_id, "ai", first_text_with_tags)
+        first_db_message_id = save_message_to_db(session_id, "ai", first_text_with_tags)
         first_msg_id = f"msg-{session_id}-init"
 
         await safe_send_message(session_id, {
@@ -638,6 +679,8 @@ async def _init_persona_and_first_message(websocket, session_id: str,
                 emotion=opening_emotion,
                 voice_modify=None,
             )
+            save_message_to_db(session_id, "ai", first_text_with_tags,
+                               audio_bytes, "audio/mpeg", first_db_message_id)
             await safe_send_message(session_id, {
                 "type": "ai_message_audio",
                 "id": first_msg_id,
@@ -787,6 +830,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # 实测 5s 中文 → 2.1s 收到 first audio delta（豆包级延迟）
     pcm_queue: asyncio.Queue = asyncio.Queue()
     stream_buffer: List[bytes] = []
+    recording_buffer: List[bytes] = []
     stream_mime: str = "audio/webm"
     stream_client_id: Optional[str] = None
     stream_lock = asyncio.Lock()
@@ -801,6 +845,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     async def _realtime_voice_chat_runner():
         from app.services.llm.minimax import get_minimax_service
         svc = get_minimax_service()
+        realtime_audio_parts: List[bytes] = []
         try:
             async def pcm_source():
                 while True:
@@ -817,6 +862,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                     })
                 except Exception: pass
             async def on_audio_delta(audio_bytes):
+                realtime_audio_parts.append(bytes(audio_bytes))
                 try:
                     await manager.send_audio_chunk(session_id, audio_bytes)
                 except Exception: pass
@@ -827,6 +873,19 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 system_instruction='你扮演客户李总，45岁制造业总经理。简短的回复1-2句话。',
             )
             print(f"[Realtime] done, final: {final_text!r}")
+            if final_text:
+                session_manager.add_message(session_id, "ai", final_text)
+                pcm_audio = b"".join(realtime_audio_parts)
+                if pcm_audio:
+                    wav_buffer = io.BytesIO()
+                    with wave.open(wav_buffer, "wb") as wav_file:
+                        wav_file.setnchannels(1)
+                        wav_file.setsampwidth(2)
+                        wav_file.setframerate(24000)
+                        wav_file.writeframes(pcm_audio)
+                    save_message_to_db(session_id, "ai", final_text, wav_buffer.getvalue(), "audio/wav")
+                else:
+                    save_message_to_db(session_id, "ai", final_text)
             try:
                 await safe_send_message(session_id, {
                     'type': 'ai_streaming_end',
@@ -886,6 +945,8 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 audio_bytes = bytes(raw["bytes"])
                 async with stream_lock:
                     stream_buffer.append(audio_bytes)
+                    if voice_active:
+                        recording_buffer.append(audio_bytes)
                     cur_size = sum(len(c) for c in stream_buffer)
                 if voice_active and cur_size >= _FFMPEG_BATCH_BYTES:
                     # 批量转码：取累积的所有 audio
@@ -918,6 +979,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             elif msg_type == "voice_start":
                 async with stream_lock:
                     stream_buffer.clear()
+                    recording_buffer.clear()
                     stream_mime = data.get("audio_mime", "audio/webm")
                     stream_client_id = data.get("id")
                 voice_active = True
@@ -937,7 +999,11 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 async with stream_lock:
                     all_audio = b"".join(stream_buffer)
                     stream_buffer.clear()
+                    recorded_audio = b"".join(recording_buffer)
+                    recording_buffer.clear()
                 pcm = await _ffmpeg_to_pcm(all_audio, stream_mime) if all_audio else None
+                if recorded_audio:
+                    save_message_to_db(session_id, "user", "语音消息", recorded_audio, stream_mime)
                 if pcm:
                     await pcm_queue.put(pcm)
                 await pcm_queue.put(None)

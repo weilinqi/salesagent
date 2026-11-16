@@ -171,6 +171,9 @@ export const usePracticeStore = create<PracticeState>()(
           current_phase: 'opening',
           websocket_url: response.websocket_url,
           first_message: response.first_message,
+          customer_context: spinContext?.customerContext,
+          investigation_result: spinContext?.investigationResult,
+          user_context: spinContext?.userContext,
           persona: spinContext?.investigationResult
             ? {
                 name: spinContext.investigationResult.name || '客户',

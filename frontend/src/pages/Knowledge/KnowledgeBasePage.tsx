@@ -30,6 +30,12 @@ const KnowledgeBasePage = () => {
   const [knowledgeState, setKnowledgeState] = useState(initialKnowledgeState)
   const { documents, stats, isLoading, loadError, isIngesting, ingestNotice, submissionErrors, pollingPaused } = knowledgeState
   const monitorRef = useRef<ReturnType<typeof createKnowledgeMonitor> | null>(null)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploadCategory, setUploadCategory] = useState('general')
+  const [isUploadingPdf, setIsUploadingPdf] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState('')
+  const [uploadError, setUploadError] = useState('')
+  const uploadInputRef = useRef<HTMLInputElement>(null)
   // SPIN form state
   const [spinIndustry, setSpinIndustry] = useState('')
   const [spinScale, setSpinScale] = useState('')
@@ -86,6 +92,23 @@ const KnowledgeBasePage = () => {
   }
 
   const handleIngestAll = () => monitorRef.current?.ingestAll()
+  const handleUploadPdf = async () => {
+    if (!uploadFile || isUploadingPdf) return
+    setIsUploadingPdf(true)
+    setUploadMessage('')
+    setUploadError('')
+    try {
+      await api.uploadPdf(uploadFile, uploadCategory)
+      setUploadMessage(`${uploadFile.name} 已上传并加入知识库处理队列。`)
+      setUploadFile(null)
+      if (uploadInputRef.current) uploadInputRef.current.value = ''
+      await monitorRef.current?.refresh()
+    } catch (error: any) {
+      setUploadError(error?.response?.data?.detail || error?.message || 'PDF 上传失败，请稍后重试。')
+    } finally {
+      setIsUploadingPdf(false)
+    }
+  }
   const handleGenerateSpin = async () => {
     if (!spinIndustry || !spinScale || !spinPainPoints) {
       alert('请填写完整的客户信息')
@@ -227,6 +250,26 @@ const KnowledgeBasePage = () => {
           )}
         </button>
       </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <label htmlFor="knowledge-pdf-upload" className="text-sm font-medium text-gray-700">上传同事提供的原始 PDF</label>
+        <input ref={uploadInputRef} id="knowledge-pdf-upload" type="file" accept="application/pdf,.pdf"
+          onChange={event => setUploadFile(event.target.files?.[0] || null)}
+          className="min-w-0 flex-1 text-sm text-gray-600" />
+        <select value={uploadCategory} onChange={event => setUploadCategory(event.target.value)}
+          aria-label="PDF 资料分类" className="rounded border border-gray-300 bg-white px-2 py-2 text-sm">
+          <option value="general">通用资料</option>
+          <option value="spin">SPIN</option>
+          <option value="solution_selling">解决方案销售</option>
+          <option value="strategic_marketing">战略营销</option>
+        </select>
+        <button type="button" onClick={handleUploadPdf} disabled={!uploadFile || isUploadingPdf}
+          className="rounded-lg bg-primary px-4 py-2 text-sm text-white disabled:opacity-50">
+          {isUploadingPdf ? '上传并入库中…' : '上传并入库'}
+        </button>
+      </div>
+      {uploadMessage && <p role="status" className="rounded-lg bg-green-50 p-3 text-sm text-green-800">{uploadMessage}</p>}
+      {uploadError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{uploadError}</p>}
 
       {ingestNotice && <p role="status" className="bg-blue-50 p-3 text-sm text-blue-900 rounded-lg">{ingestNotice}</p>}
       {submissionErrors.map((error, index) => (

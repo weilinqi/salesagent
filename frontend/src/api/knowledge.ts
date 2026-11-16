@@ -15,6 +15,7 @@ export interface KnowledgeStats {
 export interface KnowledgeDocument {
   id: string
   name: string
+  source_type: string
   category: string
   status: 'pending' | 'queued' | 'processing' | 'completed' | 'failed'
   chunk_count: number
@@ -30,6 +31,7 @@ export interface SearchResult {
   id: string
   text: string
   source: string
+  document_id?: string | null
   score: number
   metadata: Record<string, any>
 }
@@ -70,6 +72,21 @@ const api = {
    */
   async getDocuments(signal?: AbortSignal): Promise<KnowledgeDocument[]> {
     const response = await axios.get(`${API_BASE}/documents`, { signal })
+    return response.data
+  },
+
+  async getOriginalPdf(documentId: string, signal?: AbortSignal): Promise<Blob> {
+    const response = await axios.get(`${API_BASE}/documents/${encodeURIComponent(documentId)}/pdf`, {
+      responseType: 'blob', signal,
+    })
+    return response.data
+  },
+
+  async uploadPdf(file: File, category: string): Promise<{ document_id: string; status: string; message: string }> {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('category', category)
+    const response = await axios.post(`${API_BASE}/documents/upload`, form)
     return response.data
   },
 

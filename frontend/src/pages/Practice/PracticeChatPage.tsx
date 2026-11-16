@@ -19,6 +19,7 @@ import { useAudioStream } from '../../hooks/useAudioStream'
 import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
 import SpinStageHint from '../../components/business/practice/SpinStageHint'
+import PracticeMaterialsPanel from '../../components/business/practice/PracticeMaterialsPanel'
 import api, { RoleConfig } from '../../api/practice'
 import { loadSessionHistory } from '../../utils/sessionHistory'
 
@@ -80,6 +81,15 @@ const INITIAL_SPIN_GUIDANCE: SpinGuidanceData = {
   isInitial: true,
 }
 
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  }
+  return btoa(binary)
+}
+
 const PracticeChatPage = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -108,6 +118,19 @@ const PracticeChatPage = () => {
 
   // Audio streaming for TTS playback
   const audioStream = useAudioStream()
+
+  const playMessageAudio = useCallback(async (audioData: string, messageId?: string) => {
+    if (!audioData.startsWith('/api/v1/')) {
+      audioStream.playStoredAudio(audioData, messageId)
+      return
+    }
+    try {
+      const { data } = await axios.get<Blob>(audioData, { responseType: 'blob' })
+      audioStream.playStoredAudio(await blobToBase64(data), messageId)
+    } catch (error) {
+      console.error('Failed to load saved practice audio', error)
+    }
+  }, [audioStream.playStoredAudio])
 
   // First message comes from WebSocket (ai_message with empty audio_data,
 // then ai_message_audio with the audio). No local fallback - backend
@@ -527,7 +550,7 @@ const PracticeChatPage = () => {
             onVoiceEnd={sendVoiceEnd}
             onAudioChunk={sendAudioChunk}
             onStopPlayback={handleStopPlayback}
-            onPlayAudio={audioStream.playStoredAudio}
+            onPlayAudio={playMessageAudio}
             isDisabled={currentSession?.status === 'completed'}
             isSending={isSending}
             isConnected={isConnected}
@@ -542,13 +565,22 @@ const PracticeChatPage = () => {
         </div>
         {/* OR-4: Real-time SPIN Stage Hint Sidebar */}
         <div className="w-80 border-l border-gray-200 bg-gray-50 overflow-y-auto p-3">
-          <p className="text-xs font-medium text-gray-500 mb-3">实时SPIN指导</p>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-gray-500">实时SPIN指导</p>
+            <PracticeMaterialsPanel
+              sessionId={currentSession?.id}
+              profile={currentSession?.customer_context?.preparation}
+              references={spinGuidance?.references || []}
+              searched={spinGuidance?.searched}
+              notFound={spinGuidance?.not_found}
+              searchError={spinGuidance?.search_error}
+              searchQuery={spinGuidance?.last_search_query}
+              updatedAt={spinGuidance?.updated_at}
+            />
+          </div>
           <SpinStageHint
             key={currentSession?.id}
             guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}
-            sessionId={currentSession?.id}
-            preparationProfile={currentSession?.customer_context?.preparation}
-            preparationBackground={currentSession?.customer_context?.preparation_background}
           />
         </div>
       </div>

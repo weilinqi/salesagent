@@ -55,7 +55,7 @@ async def _search_once(query: str, num_results: int, key: str) -> list:
         return []
     if not key:
         raise SearchUnavailable("尚未配置 MiniMax 搜索密钥。")
-    host = settings.MINIMAX_API_HOST.rstrip("/")
+    host = (settings.MINIMAX_SEARCH_API_HOST or settings.MINIMAX_API_HOST).rstrip("/")
     if host not in {"https://api.minimaxi.com", "https://api.minimax.io"}:
         raise SearchUnavailable("MiniMax 搜索地址必须使用中国站或国际站官方地址。")
 
@@ -97,7 +97,13 @@ async def _search_once(query: str, num_results: int, key: str) -> list:
         if exc.code == 2038:
             raise SearchUnavailable("MiniMax 搜索需要先在开放平台完成实名认证。") from None
         if credential_error(exc) or exc.http_status == 403:
-            raise credential_failure("MiniMax 搜索鉴权、额度或频率受限。") from None
+            raise credential_failure(
+                "MiniMax 搜索密钥无效、额度或频率受限。请配置有 Web Search 权限的 MiniMax Token/Coding Plan 密钥，并确认密钥地区与搜索地址一致。"
+            ) from None
+        if exc.http_status in (404, 405):
+            raise SearchUnavailable(
+                "MiniMax 搜索接口地址未开放或地区不匹配，请确认使用官方地址及有 Web Search 权限的 Token/Coding Plan 密钥。"
+            ) from None
         logger.warning("MiniMax search failed (code=%s, HTTP=%s).",
                        exc.code if isinstance(exc.code, int) else "n/a",
                        exc.http_status or "n/a")

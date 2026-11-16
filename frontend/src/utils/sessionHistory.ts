@@ -12,6 +12,9 @@ export async function loadSessionHistory(sessionId: string, signal: AbortSignal)
       id: row.id,
       type: (row.role === 'ai' || row.role === 'assistant' ? 'ai' : row.role) as 'user' | 'ai' | 'system',
       content: row.content,
+      audioData: row.audio_url
+        ? `/api/v1/practice/sessions/${sessionId}/messages/${row.id}/audio`
+        : undefined,
       timestamp: row.created_at,
     })),
   }

@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7, gt=0)
 
     KNOWLEDGE_DATA_DIR: Path = PROJECT_DIR / "原始数据"
+    PRACTICE_AUDIO_DIR: Path = PROJECT_DIR / "practice_audio"
+    PRACTICE_MATERIALS_DIR: Path = PROJECT_DIR / "practice_materials"
     AUDIO_DEBUG_ENABLED: bool = False
     AUDIO_DEBUG_RETENTION_HOURS: int = Field(default=24, gt=0)
     ENABLE_MODEL_WARMUP: bool = True
@@ -74,6 +76,7 @@ class Settings(BaseSettings):
     MINIMAX_FALLBACK_API_KEY: Optional[str] = Field(default=None, repr=False)
     MINIMAX_TERTIARY_API_KEY: Optional[str] = Field(default=None, repr=False)
     MINIMAX_SEARCH_API_KEY: Optional[str] = Field(default=None, repr=False)
+    MINIMAX_SEARCH_API_HOST: Optional[str] = None
     MINIMAX_API_HOST: str = "https://api.minimaxi.com"
     MINIMAX_USE_PROXY: bool = False
     MINIMAX_BASE_URL: str = "https://api.minimaxi.com/v1"
