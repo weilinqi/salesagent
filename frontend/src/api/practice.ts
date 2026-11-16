@@ -36,6 +36,7 @@ export interface CustomerContext {
   training_mode?: 'full' | 'rejection'
   preparation_background?: import('../components/business/practice/CustomerPreparation').Background
   preparation?: import('../components/business/practice/CustomerPreparation').PreparationProfile
+  preparation_pdf?: { filename: string; created_at: string }
   industry: string
   scale: string
   pain_points: string[]
@@ -52,12 +53,28 @@ export interface InvestigationContext {
 export interface PracticeSessionContext {
   customerContext?: CustomerContext
   investigationResult?: InvestigationContext
-  userContext?: object
+  userContext?: Record<string, unknown>
 }
 
 export interface PracticeSessionDetail {
   id: string
   scenario_id: string
+  scenario?: Scenario | null
+  status: 'preparing' | 'active' | 'completed'
+  current_phase: 'opening' | 'discovery' | 'needs' | 'proposal' | 'closing' | null
+  role_config: RoleConfig
+  customer_context?: CustomerContext | null
+  investigation_result?: InvestigationContext | null
+  user_context?: Record<string, unknown> | null
+  persona?: import('../stores/practiceStore').CustomerPersona | null
+}
+
+export interface PracticeMessage {
+  id: string
+  role: 'user' | 'ai' | 'assistant' | 'system'
+  content: string
+  audio_url?: string | null
+  created_at: string
 }
 
 // Session list types
@@ -167,7 +184,7 @@ const api = {
     roleConfig: RoleConfig,
     customerContext?: CustomerContext,
     investigationResult?: InvestigationContext,
-    userContext?: object
+    userContext?: Record<string, unknown>
   ): Promise<SessionCreateResponse> {
     const response = await axios.post(`${API_BASE}/practice/sessions`, {
       scenario_id: scenarioId,
@@ -177,6 +194,22 @@ const api = {
       user_context: userContext,
     })
     return response.data
+  },
+
+  async saveSessionPreparationPdf(
+    sessionId: string,
+    profile: import('../components/business/practice/CustomerPreparation').PreparationProfile,
+    background: import('../components/business/practice/CustomerPreparation').Background,
+  ): Promise<{ status: string; filename: string }> {
+    const response = await axios.post(`${API_BASE}/practice/sessions/${sessionId}/preparation/material`, { profile, background })
+    return response.data
+  },
+
+  async getSessionPreparationPdf(sessionId: string, signal?: AbortSignal): Promise<{ blob: Blob; filename: string }> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}/preparation/material.pdf`, {
+      responseType: 'blob', signal,
+    })
+    return { blob: response.data, filename: '对话前销售资料.pdf' }
   },
 
   /**
@@ -245,8 +278,13 @@ const api = {
   /**
    * 获取单个会话详情
    */
-  async getSession(sessionId: string): Promise<PracticeSessionDetail> {
-    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}`)
+  async getSession(sessionId: string, signal?: AbortSignal): Promise<PracticeSessionDetail> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}`, { signal })
+    return response.data
+  },
+
+  async getSessionMessages(sessionId: string, signal?: AbortSignal): Promise<PracticeMessage[]> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}/messages`, { signal })
     return response.data
   },
 

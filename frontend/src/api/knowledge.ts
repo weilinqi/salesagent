@@ -15,6 +15,7 @@ export interface KnowledgeStats {
 export interface KnowledgeDocument {
   id: string
   name: string
+  source_type: string
   category: string
   status: 'pending' | 'queued' | 'processing' | 'completed' | 'failed'
   chunk_count: number
@@ -30,8 +31,23 @@ export interface SearchResult {
   id: string
   text: string
   source: string
+  document_id?: string | null
   score: number
   metadata: Record<string, any>
+}
+
+export type SearchMode = 'local' | 'auto' | 'web'
+export interface WebSearchResult {
+  title: string
+  url: string
+  snippet: string
+  date: string
+}
+export interface KnowledgeSearchResponse {
+  results: SearchResult[]
+  total: number
+  web_results?: WebSearchResult[]
+  notices?: string[]
 }
 
 export interface SpinQuestions {
@@ -59,11 +75,26 @@ const api = {
     return response.data
   },
 
+  async getOriginalPdf(documentId: string, signal?: AbortSignal): Promise<Blob> {
+    const response = await axios.get(`${API_BASE}/documents/${encodeURIComponent(documentId)}/pdf`, {
+      responseType: 'blob', signal,
+    })
+    return response.data
+  },
+
+  async uploadPdf(file: File, category: string): Promise<{ document_id: string; status: string; message: string }> {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('category', category)
+    const response = await axios.post(`${API_BASE}/documents/upload`, form)
+    return response.data
+  },
+
   /**
    * Search knowledge base
    */
-  async search(query: string, top_k: number = 5): Promise<{ results: SearchResult[]; total: number }> {
-    const response = await axios.post(`${API_BASE}/search`, { query, top_k })
+  async search(query: string, top_k: number = 5, mode: SearchMode = 'local', signal?: AbortSignal): Promise<KnowledgeSearchResponse> {
+    const response = await axios.post(`${API_BASE}/search`, { query, top_k, mode }, { signal })
     return response.data
   },
 

@@ -12,6 +12,7 @@ import { usePracticeStore } from '../../stores/practiceStore'
 import { useSpinStore } from '../../stores/spinStore'
 import { useAuth } from '../../contexts/AuthContext'
 import { RoleConfig, PracticeSessionContext } from '../../api/practice'
+import practiceApi from '../../api/practice'
 
 import RoleSelector from '../../components/business/practice/RoleSelector'
 import CustomerPreparation, { PreparationProfile, Background } from '../../components/business/practice/CustomerPreparation'
@@ -87,6 +88,16 @@ const PracticePage = () => {
         investigationResult: previous?.investigationResult?.company === profile.organization && previous?.investigationResult?.title === profile.target ? previous.investigationResult : undefined,
         userContext: { sales_name: user?.full_name || user?.username || '销售员', practice_goals: [profile.goal] },
       })
+      if (background?.search_key) {
+        const session = usePracticeStore.getState().currentSession
+        if (!session) throw new Error('对练会话创建后未能读取会话信息')
+        try {
+          await practiceApi.saveSessionPreparationPdf(session.id, profile, background)
+        } catch (error) {
+          await usePracticeStore.getState().endSession()
+          throw new Error(error instanceof Error ? `对话前 PDF 保存失败：${error.message}` : '对话前 PDF 保存失败，请重试')
+        }
+      }
       setCurrentStep('ready')
     } catch (error) {
       setStartError(error instanceof Error ? error.message : '启动对练失败')

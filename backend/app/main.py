@@ -9,6 +9,9 @@ import base64
 import asyncio
 import logging
 import ssl
+import uuid
+import wave
+import io
 from pathlib import Path
 import websockets
 from datetime import datetime
@@ -219,19 +222,50 @@ async def safe_send_status(session_id: str, state, metadata: dict = None) -> Non
         pass
 
 
-def save_message_to_db(session_id: str, role: str, content: str) -> None:
-    """Persist a single chat message to the database."""
+def save_message_to_db(session_id: str, role: str, content: str,
+                       audio_bytes: bytes = None, audio_mime: str = None,
+                       message_id: str = None) -> Optional[str]:
+    """Persist a chat message and its optional replayable audio file."""
+    db = None
+    audio_path = None
     try:
         db = SessionLocal()
-        db.add(PracticeMessage(session_id=session_id, role=role, content=content))
+        message = (db.query(PracticeMessage).filter(
+            PracticeMessage.id == message_id,
+            PracticeMessage.session_id == session_id,
+        ).first() if message_id else None)
+        if message is None:
+            message = PracticeMessage(id=str(uuid.uuid4()), session_id=session_id,
+                                      role=role, content=content)
+            db.add(message)
+        else:
+            message.content = content
+        if audio_bytes:
+            extension = {
+                "audio/webm": "webm", "audio/ogg": "ogg", "audio/wav": "wav",
+                "audio/mpeg": "mp3", "audio/mp3": "mp3", "audio/mp4": "m4a",
+                "audio/x-m4a": "m4a",
+            }.get((audio_mime or "").split(";", 1)[0].strip().lower())
+            if extension:
+                session_directory = str(uuid.UUID(session_id))
+                audio_root = Path(settings.PRACTICE_AUDIO_DIR).resolve()
+                audio_path = audio_root / session_directory / f"{message.id}.{extension}"
+                audio_path.parent.mkdir(parents=True, exist_ok=True)
+                audio_path.write_bytes(audio_bytes)
+                message.audio_url = audio_path.relative_to(audio_root).as_posix()
         db.commit()
+        return message.id
     except Exception as e:
         print(f"[DB] Failed to save message: {e}")
+        if audio_path is not None:
+            try:
+                audio_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return None
     finally:
-        try:
+        if db is not None:
             db.close()
-        except Exception:
-            pass
 
 
 async def send_ai_audio(websocket, session_id: str, text: str,
@@ -283,6 +317,13 @@ async def generate_opening_message(scenario_name: str, scenario_id: str,
 # User message processing (background task)
 # =============================================================================
 
+async def _safe_update_spin_guidance(session_id: str) -> None:
+    try:
+        from app.services.conversation.spin_guidance import update_guidance
+        await update_guidance(session_id)
+    except Exception:
+        logger.exception("SPIN guidance agent unavailable")
+
 async def process_user_message(websocket, session_id: str, content: str,
                               audio_data: str = None,
                               audio_mime: str = None,
@@ -305,9 +346,11 @@ async def process_user_message(websocket, session_id: str, content: str,
     #   3. Local faster-whisper (small) — offline fallback
     user_text = content
     asr_ok = False
+    user_audio_bytes = None
     if audio_data:
         try:
             audio_bytes = base64.b64decode(audio_data)
+            user_audio_bytes = audio_bytes
             mime = audio_mime or "audio/webm"
             print(f"[ASR] decoding {len(audio_bytes)} bytes, mime={mime}")
             est_seconds = len(audio_bytes) / 32000
@@ -361,7 +404,7 @@ async def process_user_message(websocket, session_id: str, content: str,
         })
 
     session_manager.add_message(session_id, "user", user_text)
-    save_message_to_db(session_id, "user", user_text)
+    save_message_to_db(session_id, "user", user_text, user_audio_bytes, audio_mime)
 
     if not minimax.api_key:
         await _send_mock_response(session_id, "抱歉，我现在无法回答。请确保API密钥已正确配置。")
@@ -421,6 +464,7 @@ async def process_user_message(websocket, session_id: str, content: str,
         )
 
         full_response = result.get("full_response", "")
+        ai_audio_data = result.get("audio_data") or ""
         refs = result.get("knowledge_refs", [])
         if refs:
             if not hasattr(manager, '_knowledge_refs'):
@@ -428,7 +472,18 @@ async def process_user_message(websocket, session_id: str, content: str,
             manager._knowledge_refs.setdefault(session_id, []).extend(refs)
         if full_response:
             session_manager.add_message(session_id, "ai", full_response)
-            save_message_to_db(session_id, "ai", full_response)
+            try:
+                ai_audio_bytes = base64.b64decode(ai_audio_data) if ai_audio_data else None
+            except (ValueError, TypeError):
+                ai_audio_bytes = None
+            save_message_to_db(session_id, "ai", full_response, ai_audio_bytes, "audio/mpeg")
+        if user_text:
+            guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
+            if guidance_tasks is None:
+                manager._spin_guidance_tasks = guidance_tasks = set()
+            guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
+            guidance_tasks.add(guidance_task)
+            guidance_task.add_done_callback(guidance_tasks.discard)
         await _maybe_transition_phase(session_id)
     except Exception as e:
         print(f"[LLM] error: {e}")
@@ -478,12 +533,12 @@ async def _init_persona_and_first_message(websocket, session_id: str,
         # Check for pre-existing investigation_result (from SPIN flow)
         session_info = session_manager.get_session_info(session_id) or {}
         investigation_result = session_info.get("investigation_result")
-        persona = None
+        persona = session_info.get('persona')
         prepared = (session_info.get("customer_context") or {}).get("preparation")
-        if prepared:
+        if not persona and prepared:
             from app.services.preparation import build_prepared_persona
             persona = build_prepared_persona(prepared, (session_info.get("customer_context") or {}).get("preparation_background"))
-        elif investigation_result and investigation_result.get("name"):
+        elif not persona and investigation_result and investigation_result.get("name"):
             # Convert investigation_result to persona shape. Pull every field
             # the SPIN investigation endpoint returned so the LLM has full
             # context for role-playing (recent_news, media_reports, etc).
@@ -552,13 +607,22 @@ async def _init_persona_and_first_message(websocket, session_id: str,
                 "recent_activities": "; ".join(recent_news[:5]) if recent_news else ""
             }
             print(f"[WS] Using investigation_result as persona: {persona.get('name')} - {persona.get('title')}@{persona.get('company')}")
-        else:
+        elif not persona:
             print(f"[WS] Generating persona for {session_id}...")
             persona = await generate_persona_for_session(scenario_name, role_config)
             print(f"[WS] Persona ready: {persona.get('name')} - {persona.get('title')}@{persona.get('company')}")
 
-        persona['training_mode'] = (session_info.get('customer_context') or {}).get('training_mode', 'full')
+        training_mode = (session_info.get('customer_context') or {}).get('training_mode')
+        if training_mode and training_mode != 'full':
+            persona['training_mode'] = training_mode
         session_manager.update_session_field(session_id, "persona", persona)
+        # Save the generated persona in the existing JSON snapshot so restart or
+        # another browser does not generate a different customer for this session.
+        with SessionLocal() as db:
+            persisted = db.get(PracticeSession, session_id)
+            if persisted is not None:
+                persisted.role_config = {**(persisted.role_config or {}), '__persona': persona}
+                db.commit()
 
         first_text = await generate_opening_message(
             scenario_name=scenario_name,
@@ -589,6 +653,7 @@ async def _init_persona_and_first_message(websocket, session_id: str,
             first_text_with_tags = first_text
 
         session_manager.add_message(session_id, "ai", first_text_with_tags)
+        first_db_message_id = save_message_to_db(session_id, "ai", first_text_with_tags)
         first_msg_id = f"msg-{session_id}-init"
 
         await safe_send_message(session_id, {
@@ -616,6 +681,8 @@ async def _init_persona_and_first_message(websocket, session_id: str,
                 emotion=opening_emotion,
                 voice_modify=None,
             )
+            save_message_to_db(session_id, "ai", first_text_with_tags,
+                               audio_bytes, "audio/mpeg", first_db_message_id)
             await safe_send_message(session_id, {
                 "type": "ai_message_audio",
                 "id": first_msg_id,
@@ -659,7 +726,8 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                   if protocol.startswith("bearer.")]
         token = tokens[0] if len(tokens) == 1 else None
     origin = websocket.headers.get("origin")
-    if origin and origin not in settings.CORS_ORIGINS:
+    from app.core.websocket_origin import allowed_websocket_origin
+    if origin and not allowed_websocket_origin(origin, settings.CORS_ORIGINS, settings.ENVIRONMENT):
         await websocket.close(code=1008, reason="Origin not allowed")
         return
     user_id = get_user_id_from_token(token) if token else None
@@ -679,11 +747,26 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         user_context = persisted.user_context
         scenario = db.get(Scenario, scenario_id) if scenario_id else None
         scenario_name = scenario.name if scenario else "AI客户"
+        saved_phase = persisted.current_phase or 'opening'
+        saved_persona = role_config.get('__persona')
+        history = [(row.role, row.content) for row in db.query(PracticeMessage)
+                   .filter(PracticeMessage.session_id == session_id)
+                   .order_by(PracticeMessage.created_at, PracticeMessage.id).all()]
     await manager.connect(websocket, session_id)
     await safe_send_status(session_id, ConversationState.IDLE, {"phase": "preparing_persona"})
     if not session_manager.get_session_info(session_id):
         session_manager.create_session(session_id, scenario_id, role_config,
                                        customer_context, investigation_result, user_context)
+        session_manager.update_phase(session_id, saved_phase)
+        if saved_persona:
+            session_manager.update_session_field(session_id, 'persona', saved_persona)
+    if not session_manager.get_context(session_id):
+        for role, content in history:
+            session_manager.add_message(session_id, role, content)
+    saved_guidance = getattr(manager, "_spin_guidance", {}).get(session_id)
+    if saved_guidance:
+        await manager.send_message(session_id, {"type": "spin_guidance", "data": saved_guidance})
+    is_new_conversation = not session_manager.get_context(session_id)
     tasks = set()
     def spawn(coroutine):
         task = asyncio.create_task(coroutine)
@@ -691,12 +774,16 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         task.add_done_callback(tasks.discard)
         return task
 
+    if not saved_guidance and session_manager.get_context(session_id):
+        spawn(_safe_update_spin_guidance(session_id))
+
     # ------------------------------------------------------------------
     # Fire-and-forget persona + opening message (slow LLM)
     # ------------------------------------------------------------------
-    spawn(_init_persona_and_first_message(
-        websocket, session_id, scenario_name, scenario_id, role_config
-    ))
+    if is_new_conversation:
+        spawn(_init_persona_and_first_message(
+            websocket, session_id, scenario_name, scenario_id, role_config
+        ))
 
     # ------------------------------------------------------------------
     # Send immediate placeholder so the UI has something to show
@@ -723,13 +810,14 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         print(f"[WS] DEBUG placeholder ERROR: {e}")
         traceback.print_exc()
 
-    await safe_send_message(session_id, {
-        "type": "ai_message",
-        "id": f"msg-{session_id}-init",
-        "content": placeholder_text,
-        "audio_data": "",
-        "timestamp": datetime.utcnow().isoformat()
-    })
+    if is_new_conversation:
+        await safe_send_message(session_id, {
+            "type": "ai_message",
+            "id": f"msg-{session_id}-init",
+            "content": placeholder_text,
+            "audio_data": "",
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
     # ------------------------------------------------------------------
     # Receive loop (single, well-defined)
@@ -744,6 +832,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     # 实测 5s 中文 → 2.1s 收到 first audio delta（豆包级延迟）
     pcm_queue: asyncio.Queue = asyncio.Queue()
     stream_buffer: List[bytes] = []
+    recording_buffer: List[bytes] = []
     stream_mime: str = "audio/webm"
     stream_client_id: Optional[str] = None
     stream_lock = asyncio.Lock()
@@ -758,6 +847,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     async def _realtime_voice_chat_runner():
         from app.services.llm.minimax import get_minimax_service
         svc = get_minimax_service()
+        realtime_audio_parts: List[bytes] = []
         try:
             async def pcm_source():
                 while True:
@@ -774,6 +864,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                     })
                 except Exception: pass
             async def on_audio_delta(audio_bytes):
+                realtime_audio_parts.append(bytes(audio_bytes))
                 try:
                     await manager.send_audio_chunk(session_id, audio_bytes)
                 except Exception: pass
@@ -784,6 +875,19 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 system_instruction='你扮演客户李总，45岁制造业总经理。简短的回复1-2句话。',
             )
             print(f"[Realtime] done, final: {final_text!r}")
+            if final_text:
+                session_manager.add_message(session_id, "ai", final_text)
+                pcm_audio = b"".join(realtime_audio_parts)
+                if pcm_audio:
+                    wav_buffer = io.BytesIO()
+                    with wave.open(wav_buffer, "wb") as wav_file:
+                        wav_file.setnchannels(1)
+                        wav_file.setsampwidth(2)
+                        wav_file.setframerate(24000)
+                        wav_file.writeframes(pcm_audio)
+                    save_message_to_db(session_id, "ai", final_text, wav_buffer.getvalue(), "audio/wav")
+                else:
+                    save_message_to_db(session_id, "ai", final_text)
             try:
                 await safe_send_message(session_id, {
                     'type': 'ai_streaming_end',
@@ -843,6 +947,8 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 audio_bytes = bytes(raw["bytes"])
                 async with stream_lock:
                     stream_buffer.append(audio_bytes)
+                    if voice_active:
+                        recording_buffer.append(audio_bytes)
                     cur_size = sum(len(c) for c in stream_buffer)
                 if voice_active and cur_size >= _FFMPEG_BATCH_BYTES:
                     # 批量转码：取累积的所有 audio
@@ -875,6 +981,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             elif msg_type == "voice_start":
                 async with stream_lock:
                     stream_buffer.clear()
+                    recording_buffer.clear()
                     stream_mime = data.get("audio_mime", "audio/webm")
                     stream_client_id = data.get("id")
                 voice_active = True
@@ -894,7 +1001,11 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 async with stream_lock:
                     all_audio = b"".join(stream_buffer)
                     stream_buffer.clear()
+                    recorded_audio = b"".join(recording_buffer)
+                    recording_buffer.clear()
                 pcm = await _ffmpeg_to_pcm(all_audio, stream_mime) if all_audio else None
+                if recorded_audio:
+                    save_message_to_db(session_id, "user", "语音消息", recorded_audio, stream_mime)
                 if pcm:
                     await pcm_queue.put(pcm)
                 await pcm_queue.put(None)

@@ -7,7 +7,7 @@ const dependencyRequire = createRequire(path.resolve(process.env.TEST_NODE_MODUL
 const ts = dependencyRequire('typescript')
 const axios = dependencyRequire('axios')
 
-function harness() {
+function harness(overrides = {}) {
   const effects = [], states = []
   const slots = []
   let cursor = 0
@@ -43,6 +43,7 @@ function harness() {
       module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true, target: ts.ScriptTarget.ES2020,
     } }).outputText
     const customRequire = name => {
+      if (Object.prototype.hasOwnProperty.call(overrides, name)) return overrides[name]
       if (name === 'axios') return client
       if (name === 'react') return react
       if (name === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) }

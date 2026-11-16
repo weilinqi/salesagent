@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -192,6 +192,23 @@ class KnowledgeRouteTests(unittest.TestCase):
                 response = self.client.post("/api/v1/knowledge/search", headers=self.headers("reader"), json={"query": "sales"})
             self.assertEqual(response.status_code, 503)
             self.assertNotIn("private", response.text)
+
+    def test_network_search_is_authenticated_and_does_not_touch_local_vectors(self):
+        web = AsyncMock(return_value=[{'title': 'Official', 'url': 'https://example.com', 'snippet': 'Evidence'}])
+        with patch.object(knowledge, 'search_via_mcp', web), patch.object(self.vectors, 'search') as local:
+            denied = self.client.post('/api/v1/knowledge/search', json={'query': '产品', 'mode': 'web'})
+            self.assertEqual(denied.status_code, 401)
+            web.assert_not_awaited()
+            invalid = self.client.post('/api/v1/knowledge/search', headers=self.headers('reader'),
+                                       json={'query': '   ', 'mode': 'web'})
+            self.assertEqual(invalid.status_code, 422)
+            web.assert_not_awaited()
+            response = self.client.post('/api/v1/knowledge/search', headers=self.headers('reader'),
+                                        json={'query': '产品', 'mode': 'web'})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['web_results'][0]['url'], 'https://example.com')
+            self.assertEqual(response.json()['results'], [])
+            local.assert_not_called()
 
     def test_rejects_outside_traversal_missing_non_pdf_and_directory(self):
         (Path(self.temp.name) / "outside.pdf").write_bytes(b"not a pdf")

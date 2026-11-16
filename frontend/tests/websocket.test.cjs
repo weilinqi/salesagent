@@ -54,7 +54,7 @@ test('transport close retries with bounded backoff and retrieves token dynamical
     await clock.advance()
   }
   assert.equal(created.length, 6)
-  assert.deepEqual(clock.delays, [1000, 2000, 4000, 8000, 16000])
+  assert.deepEqual(clock.delays.filter(delay => delay !== 10000), [1000, 2000, 4000, 8000, 16000])
   assert.equal(clock.queue.size, 0)
 })
 
@@ -171,4 +171,50 @@ test('established socket renews an expired JWT before sending the next message',
   assert.deepEqual(sent.map(value => JSON.parse(value)), [
     { type: 'auth_refresh', access_token: 'new-access' }, { type: 'user_message', content: 'hello' },
   ])
+})
+
+test('stalled handshake times out, closes stale socket and retries', async t => {
+  storage({ user, token: 'access' })
+  const created = sockets(), h = harness(), clock = timers(t), errors = []
+  const connection = h.load('hooks/webSocketConnection').createWebSocketConnection('ws://localhost/s1', {
+    ...callbacks(), onError: error => errors.push(error.message),
+  })
+  t.after(() => connection.disconnect()); await settle()
+  assert.equal(clock.queue.size, 1)
+  const oldOpen = created[0].onopen
+  await clock.advance()
+  assert.equal(created[0].closed, true)
+  assert.match(errors.at(-1), /超时/)
+  oldOpen()
+  await clock.advance()
+  assert.equal(created.length, 2)
+})
+
+test('exhausted retries report an actionable failure instead of indefinite connecting', async t => {
+  storage({ user, token: 'access' })
+  const created = sockets(), h = harness(), clock = timers(t), errors = []
+  const connection = h.load('hooks/webSocketConnection').createWebSocketConnection('ws://localhost/s1', {
+    ...callbacks(), onError: error => errors.push(error.message),
+  })
+  t.after(() => connection.disconnect()); await settle()
+  for (let i = 0; i < 6; i++) { created[i].onclose({ code: 1006 }); await clock.advance() }
+  assert.match(errors.at(-1), /无法连接/)
+  assert.equal(clock.queue.size, 0)
+})
+
+test('manual reconnect clears terminal error and creates a fresh authenticated socket', async t => {
+  storage({ user, token: 'access' })
+  const created = sockets(), h = harness(), hook = h.load('hooks/useWebSocket').useWebSocket
+  const render = () => h.render(() => hook({ url: 'ws://localhost/s1' }))
+  render(); h.mount(); await settle()
+  created[0].onclose({ code: 1008 })
+  let state = render()
+  assert.ok(state.connectionError)
+  assert.equal(state.isConnecting, false)
+  state.reconnect()
+  render(); const cleanups = h.mount(); t.after(() => cleanups.forEach(cleanup => cleanup())); await settle()
+  assert.equal(created.length, 2)
+  state = render()
+  assert.equal(state.connectionError, null)
+  assert.equal(state.isConnecting, true)
 })

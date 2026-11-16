@@ -1,8 +1,8 @@
 """
 Knowledge Base Schemas
 """
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional, Dict, Literal
 from datetime import datetime
 
 
@@ -55,10 +55,19 @@ class DocumentResponse(DocumentBase):
 
 class KnowledgeSearchRequest(BaseModel):
     """Schema for knowledge base search request."""
-    query: str = Field(..., description="Search query text")
+    query: str = Field(..., min_length=1, max_length=500, description="Search query text")
+    mode: Literal['local', 'auto', 'web'] = 'local'
     top_k: int = Field(default=5, description="Number of results to return", ge=1, le=20)
     source_filter: Optional[str] = Field(None, description="Filter by source")
     category: Optional[str] = Field(None, description="Filter by category (spin, solution_selling, etc.)")
+
+    @field_validator('query')
+    @classmethod
+    def trim_query(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError('Search query must not be blank')
+        return value
 
 
 class KnowledgeSearchResult(BaseModel):
@@ -66,8 +75,16 @@ class KnowledgeSearchResult(BaseModel):
     id: str
     text: str = Field(..., description="Chunk text content")
     source: str = Field(..., description="Source document name")
+    document_id: Optional[str] = None
     score: float = Field(..., description="Relevance score (0-1)")
     metadata: Dict = Field(default_factory=dict, description="Additional metadata")
+
+
+class WebSearchResult(BaseModel):
+    title: str = ''
+    url: str
+    snippet: str = ''
+    date: str = ''
 
 
 class KnowledgeSearchResponse(BaseModel):
@@ -75,6 +92,9 @@ class KnowledgeSearchResponse(BaseModel):
     results: List[KnowledgeSearchResult]
     query: str
     total: int
+    web_results: List[WebSearchResult] = Field(default_factory=list)
+    notices: List[str] = Field(default_factory=list)
+    mode: Literal['local', 'auto', 'web'] = 'local'
 
 
 class KnowledgeIngestRequest(BaseModel):

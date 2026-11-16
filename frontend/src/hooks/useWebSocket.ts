@@ -19,7 +19,7 @@ export interface KnowledgeRef {
 export interface StreamMessage {
   type: 'user_message' | 'user_message_ack' | 'ai_message' | 'ai_message_audio' | 'ai_streaming_start' | 'ai_streaming_update' |
         'ai_streaming_end' | 'audio_chunk' | 'backchannel' | 'status_update' |
-        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'system'
+        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'spin_guidance' | 'system'
   id?: string
   content?: string
   audio_data?: string
@@ -42,6 +42,8 @@ interface UseWebSocketOptions {
 interface UseWebSocketReturn {
   isConnected: boolean
   isConnecting: boolean
+  connectionError: string | null
+  reconnect: () => void
   sendMessage: (message: string, audioData?: string, id?: string, audioMime?: string) => void
   sendAudioChunk: (chunk: Uint8Array) => void
   sendStopPlayback: () => void
@@ -67,6 +69,8 @@ export const useWebSocket = ({
   const [lastMessage, setLastMessage] = useState<StreamMessage | null>(null)
   const [lastAudioChunk, setLastAudioChunk] = useState<Uint8Array | null>(null)
   const [state, setState] = useState<ConversationState>('idle')
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [retryVersion, setRetryVersion] = useState(0)
 
   const connectionRef = useRef<ReturnType<typeof createWebSocketConnection> | null>(null)
   const callbacksRef = useRef({ onMessage, onAudioChunk, onStateChange, onConnected, onDisconnected, onError })
@@ -79,13 +83,15 @@ export const useWebSocket = ({
     setState('idle')
     setLastMessage(null)
     setLastAudioChunk(null)
+    setConnectionError(null)
     if (!url) return
     const connection = createWebSocketConnection(url, {
-      onConnecting: () => { if (active) setIsConnecting(true) },
+      onConnecting: () => { if (active) { setIsConnecting(true); setConnectionError(null) } },
       onConnected: () => {
         if (!active) return
         setIsConnected(true)
         setIsConnecting(false)
+        setConnectionError(null)
         callbacksRef.current.onConnected?.()
       },
       onDisconnected: () => {
@@ -94,7 +100,12 @@ export const useWebSocket = ({
         setIsConnecting(false)
         callbacksRef.current.onDisconnected?.()
       },
-      onError: error => { if (active) callbacksRef.current.onError?.(error) },
+      onError: error => {
+        if (!active) return
+        setConnectionError('message' in error && typeof error.message === 'string'
+          ? error.message : '对练连接失败，请检查后端服务或点击重新连接。')
+        callbacksRef.current.onError?.(error)
+      },
       onMessage: event => {
         if (!active) return
         if (event.data instanceof ArrayBuffer) {
@@ -120,9 +131,10 @@ export const useWebSocket = ({
       connection.disconnect()
       if (connectionRef.current === connection) connectionRef.current = null
     }
-  }, [url])
+  }, [url, retryVersion])
 
   const disconnect = useCallback(() => { connectionRef.current?.disconnect() }, [])
+  const reconnect = useCallback(() => setRetryVersion(value => value + 1), [])
   const sendMessage = useCallback((message: string, audioData?: string, id?: string, audioMime?: string) => {
     connectionRef.current?.send(JSON.stringify({
       type: 'user_message', id, content: message, audio_data: audioData,
@@ -136,6 +148,8 @@ export const useWebSocket = ({
   return {
     isConnected,
     isConnecting,
+    connectionError,
+    reconnect,
     sendMessage,
     sendAudioChunk,
     sendStopPlayback,

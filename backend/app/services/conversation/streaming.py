@@ -603,6 +603,7 @@ async def stream_pipeline(
         })
         return {
             "full_response": "",
+            "audio_data": "",
             "sentences": [],
             "audio_chunks": [],
             "emotion": emotion,
@@ -657,6 +658,7 @@ async def stream_pipeline(
 
     return {
         "full_response": clean,
+        "audio_data": full_audio_b64,
         "sentences": sentences_emitted,
         "audio_chunks": audio_chunks_emitted,
         "emotion": emotion,

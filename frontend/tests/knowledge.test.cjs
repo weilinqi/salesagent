@@ -27,6 +27,49 @@ function pageHarness() {
 const queued = { id: 'd1', name: 'one.pdf', category: 'spin', status: 'queued', chunk_count: 0, error: null }
 const stats = { total_documents: 1, total_chunks: 0, documents_by_category: { spin: 1 }, chunks_by_source: {} }
 
+test('knowledge search sends selected mode and renders linked web evidence separately', async () => {
+  const h = pageHarness()
+  let request
+  h.client.defaults.adapter = async config => {
+    request = JSON.parse(config.data)
+    return reply(config, { results: [], total: 0,
+      web_results: [{ title: '产品官网', url: 'https://example.com/product', snippet: '产品资料', date: '2026' }],
+      notices: ['仅供参考'] })
+  }
+  let tree = h.render()
+  nodes(tree).find(node => node.type === 'input').props.onChange({ target: { value: '产品' } })
+  nodes(tree).find(node => node.type === 'select').props.onChange({ target: { value: 'web' } })
+  tree = h.render()
+  await nodes(tree).find(node => node.type === 'button' && text(node) === '搜索').props.onClick()
+  tree = h.render()
+  assert.equal(request.mode, 'web')
+  assert.equal(request.query, '产品')
+  assert.match(text(tree), /网络补充资料/)
+  assert.match(text(tree), /仅供参考/)
+  const link = nodes(tree).find(node => node.type === 'a' && text(node) === '产品官网')
+  assert.equal(link.props.href, 'https://example.com/product')
+  assert.equal(link.props.rel, 'noopener noreferrer')
+})
+
+test('knowledge search explains empty results and retains local evidence on web failure', async () => {
+  const h = pageHarness()
+  h.client.defaults.adapter = async config => reply(config, { results: [], total: 0, web_results: [] })
+  let tree = h.render()
+  nodes(tree).find(node => node.type === 'input').props.onChange({ target: { value: '找不到' } })
+  tree = h.render()
+  await nodes(tree).find(node => node.type === 'button' && text(node) === '搜索').props.onClick()
+  assert.match(text(h.render()), /没有找到相关资料/)
+  h.client.defaults.adapter = async config => reply(config, {
+    results: [{ id: 'local', source: '内部资料.pdf', text: '本地证据', score: 0.7, metadata: {} }],
+    total: 1, notices: ['联网搜索暂不可用'], web_results: [],
+  })
+  tree = h.render()
+  await nodes(tree).find(node => node.type === 'button' && text(node) === '搜索').props.onClick()
+  const visible = text(h.render())
+  assert.match(visible, /本地证据/)
+  assert.match(visible, /联网搜索暂不可用/)
+})
+
 test('document UI renders failed ingestion with server error instead of pending', async t => {
   const h = pageHarness()
   h.client.defaults.adapter = async config => reply(config, config.url.endsWith('/documents') ? [{ ...queued, status: 'failed', error: 'PDF is encrypted' }] : stats)

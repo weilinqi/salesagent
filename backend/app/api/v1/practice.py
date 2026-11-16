@@ -2,10 +2,14 @@
 Practice API endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
+from pathlib import Path
+from datetime import datetime, timezone
 
+from app.config import settings
 from app.database import get_db
 from app.core.security import get_current_user, get_current_user_optional
 from app.models.user import User
@@ -21,6 +25,7 @@ from app.schemas.practice import (
     SessionCreate,
     SessionResponse,
     SessionCreateResponse,
+    MessageResponse,
     SessionListItem,
     SessionListResponse,
     DashboardStats,
@@ -241,7 +246,41 @@ async def get_session(session_id: UUID, db: Session = Depends(get_db)):
             detail="会话不存在"
         )
 
-    return session
+    response = SessionResponse.model_validate(session)
+    response.role_config = {key: value for key, value in (session.role_config or {}).items() if key != '__persona'}
+    response.persona = (session.role_config or {}).get('__persona')
+    return response
+
+
+@router.get('/sessions/{session_id}/messages', response_model=List[MessageResponse])
+async def get_session_messages(session_id: UUID, db: Session = Depends(get_db)):
+    """Owned conversation history; settings are available from session detail."""
+    return (db.query(PracticeMessage)
+            .filter(PracticeMessage.session_id == str(session_id))
+            .order_by(PracticeMessage.created_at, PracticeMessage.id).all())
+
+
+@router.get('/sessions/{session_id}/messages/{message_id}/audio')
+async def get_session_message_audio(session_id: UUID, message_id: UUID, db: Session = Depends(get_db)):
+    """Stream a saved voice recording only to the owner of its practice session."""
+    message = (db.query(PracticeMessage)
+               .filter(PracticeMessage.id == str(message_id),
+                       PracticeMessage.session_id == str(session_id)).first())
+    if message is None or not message.audio_url:
+        raise HTTPException(status_code=404, detail='语音文件不存在')
+    relative = Path(message.audio_url)
+    if relative.is_absolute() or '..' in relative.parts:
+        raise HTTPException(status_code=404, detail='语音文件不存在')
+    root = Path(settings.PRACTICE_AUDIO_DIR).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root) or not path.is_file() or path.is_symlink():
+        raise HTTPException(status_code=404, detail='语音文件不存在')
+    media_type = {
+        '.webm': 'audio/webm', '.ogg': 'audio/ogg', '.wav': 'audio/wav',
+        '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4',
+    }.get(path.suffix.lower(), 'application/octet-stream')
+    return FileResponse(path, media_type=media_type,
+                        headers={'Cache-Control': 'private, no-store'})
 
 
 @router.post("/sessions/{session_id}/end")
@@ -1169,6 +1208,66 @@ def preparation_material(body: MaterialRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return Response(content, media_type='application/pdf', headers={'Content-Disposition':'inline; filename="sales-material.pdf"', 'Cache-Control':'no-store'})
+
+
+@router.post('/sessions/{session_id}/preparation/material')
+def save_session_preparation_material(session_id: UUID, body: MaterialRequest,
+                                      db: Session = Depends(get_db)):
+    """Render the pre-conversation PDF and retain it with its owned session."""
+    session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail='Session not found')
+    p = body.profile
+    if body.background.search_key != search_key(p.organization, p.product, p.needs, p.target):
+        raise HTTPException(status_code=422, detail='Preparation details changed; refresh the research before saving the PDF')
+    prepared = (session.customer_context or {}).get('preparation')
+    if prepared:
+        try:
+            if PreparationProfile(**prepared).model_dump() != p.model_dump():
+                raise HTTPException(status_code=422, detail='PDF does not match this practice session')
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail='Practice session preparation data is invalid') from None
+    try:
+        content = render_material(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    root = Path(settings.PRACTICE_MATERIALS_DIR).resolve()
+    session_dir = root / str(session_id)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = session_dir / 'preparation.pdf'
+    temp_path = session_dir / 'preparation.tmp'
+    try:
+        temp_path.write_bytes(content)
+        temp_path.replace(pdf_path)
+        customer_context = dict(session.customer_context or {})
+        customer_context['preparation_pdf'] = {
+            'filename': '对话前销售资料.pdf',
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        }
+        session.customer_context = customer_context
+        db.commit()
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return {'status': 'saved', 'filename': '对话前销售资料.pdf'}
+
+
+@router.get('/sessions/{session_id}/preparation/material.pdf')
+def get_session_preparation_material(session_id: UUID, db: Session = Depends(get_db)):
+    """Return the original generated preparation PDF for this owned session."""
+    session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+    if session is None:
+        raise HTTPException(status_code=404, detail='Session not found')
+    metadata = (session.customer_context or {}).get('preparation_pdf')
+    if not isinstance(metadata, dict):
+        raise HTTPException(status_code=404, detail='No saved preparation PDF for this session')
+    root = Path(settings.PRACTICE_MATERIALS_DIR).resolve()
+    path = (root / str(session_id) / 'preparation.pdf').resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(status_code=404, detail='Saved preparation PDF is unavailable')
+    return FileResponse(path, media_type='application/pdf',
+                        headers={'Content-Disposition': 'inline', 'Cache-Control': 'private, no-store'})
 
 
 from app.services.sales_suggestions import SuggestionRequest
