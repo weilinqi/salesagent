@@ -318,11 +318,51 @@ async def generate_opening_message(scenario_name: str, scenario_id: str,
 # =============================================================================
 
 async def _safe_update_spin_guidance(session_id: str) -> None:
+    from app.websocket.manager import manager
     try:
+        await manager.send_message(session_id, {
+            "type": "spin_guidance_status", "data": {"status": "updating"}
+        })
         from app.services.conversation.spin_guidance import update_guidance
-        await update_guidance(session_id)
+        guidance = await update_guidance(session_id)
+        await manager.send_message(session_id, {
+            "type": "spin_guidance_status",
+            "data": {"status": "updated" if guidance else "error"},
+        })
     except Exception:
         logger.exception("SPIN guidance agent unavailable")
+        await manager.send_message(session_id, {
+            "type": "spin_guidance_status", "data": {"status": "error"}
+        })
+
+
+async def _transcribe_voice_turn(audio_data: bytes, audio_mime: str) -> str:
+    """Transcribe a realtime voice turn so coaching sees the same text as typed turns."""
+    minimax = get_minimax_service()
+    try:
+        text = await asyncio.wait_for(
+            minimax.speech_to_text_realtime(audio_data, audio_mime=audio_mime), timeout=6.0
+        )
+        if text and text.strip():
+            return text.strip()
+    except Exception as error:
+        logger.info("Realtime voice transcript unavailable (%s); trying fallback", type(error).__name__)
+    try:
+        text = await asyncio.wait_for(
+            minimax.speech_to_text(audio_data, audio_mime=audio_mime), timeout=8.0
+        )
+        if text and text.strip():
+            return text.strip()
+    except Exception as error:
+        logger.info("Cloud voice transcript unavailable (%s); trying local fallback", type(error).__name__)
+    try:
+        text = await asyncio.wait_for(
+            minimax.speech_to_text_local(audio_data, audio_mime=audio_mime), timeout=25.0
+        )
+        return text.strip() if text else ""
+    except Exception as error:
+        logger.warning("Voice transcript unavailable (%s)", type(error).__name__)
+        return ""
 
 async def process_user_message(websocket, session_id: str, content: str,
                               audio_data: str = None,
@@ -477,7 +517,7 @@ async def process_user_message(websocket, session_id: str, content: str,
             except (ValueError, TypeError):
                 ai_audio_bytes = None
             save_message_to_db(session_id, "ai", full_response, ai_audio_bytes, "audio/mpeg")
-        if user_text:
+        if user_text and full_response:
             guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
             if guidance_tasks is None:
                 manager._spin_guidance_tasks = guidance_tasks = set()
@@ -838,6 +878,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
     stream_lock = asyncio.Lock()
     realtime_task: Optional[asyncio.Task] = None
     voice_active: bool = False
+    realtime_turn = {"text": "", "audio": b""}
     # 优化：累积到 16KB audio 才 ffmpeg 转码一次（避免启动开销）
     # 16KB webm/opus ≈ 1-2s 音频（取决于编码），转码后 ≈ 48KB 24kHz PCM
     _FFMPEG_BATCH_BYTES = 4000  # 4KB ≈ 0.25-0.5s 音频（短句也能转码）
@@ -876,7 +917,6 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             )
             print(f"[Realtime] done, final: {final_text!r}")
             if final_text:
-                session_manager.add_message(session_id, "ai", final_text)
                 pcm_audio = b"".join(realtime_audio_parts)
                 if pcm_audio:
                     wav_buffer = io.BytesIO()
@@ -885,9 +925,8 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                         wav_file.setsampwidth(2)
                         wav_file.setframerate(24000)
                         wav_file.writeframes(pcm_audio)
-                    save_message_to_db(session_id, "ai", final_text, wav_buffer.getvalue(), "audio/wav")
-                else:
-                    save_message_to_db(session_id, "ai", final_text)
+                    realtime_turn["audio"] = wav_buffer.getvalue()
+                realtime_turn["text"] = final_text
             try:
                 await safe_send_message(session_id, {
                     'type': 'ai_streaming_end',
@@ -1004,8 +1043,6 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                     recorded_audio = b"".join(recording_buffer)
                     recording_buffer.clear()
                 pcm = await _ffmpeg_to_pcm(all_audio, stream_mime) if all_audio else None
-                if recorded_audio:
-                    save_message_to_db(session_id, "user", "语音消息", recorded_audio, stream_mime)
                 if pcm:
                     await pcm_queue.put(pcm)
                 await pcm_queue.put(None)
@@ -1013,6 +1050,28 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                 if realtime_task and not realtime_task.done():
                     try: await asyncio.wait_for(realtime_task, timeout=30)
                     except: pass
+                round_complete = bool(recorded_audio and realtime_turn["text"])
+                if recorded_audio:
+                    transcript = await _transcribe_voice_turn(recorded_audio, stream_mime)
+                    user_text = transcript or "语音消息（转写暂不可用）"
+                    session_manager.add_message(session_id, "user", user_text)
+                    save_message_to_db(session_id, "user", user_text, recorded_audio, stream_mime)
+                if realtime_turn["text"]:
+                    session_manager.add_message(session_id, "ai", realtime_turn["text"])
+                    save_message_to_db(
+                        session_id, "ai", realtime_turn["text"],
+                        realtime_turn["audio"] or None,
+                        "audio/wav" if realtime_turn["audio"] else None,
+                    )
+                if round_complete:
+                    guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
+                    if guidance_tasks is None:
+                        manager._spin_guidance_tasks = guidance_tasks = set()
+                    guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
+                    guidance_tasks.add(guidance_task)
+                    guidance_task.add_done_callback(guidance_tasks.discard)
+                realtime_turn["text"] = ""
+                realtime_turn["audio"] = b""
                 if session_manager.should_insert_backchannel(session_id):
                     bt = backchannel_manager.generate_backchannel_text()
                     await safe_send_message(session_id, {'type': 'backchannel', 'content': bt})

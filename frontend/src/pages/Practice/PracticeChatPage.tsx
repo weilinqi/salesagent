@@ -59,6 +59,7 @@ interface SpinGuidanceData {
   searched?: boolean
   search_error?: boolean
   isInitial?: boolean
+  round_number?: number
   last_search_query?: string
   updated_at?: string
 }
@@ -108,6 +109,7 @@ const PracticeChatPage = () => {
   const [currentPhaseSummary, setCurrentPhaseSummary] = useState<PhaseSummaryData | null>(null)
   const [isSummaryLoading, setIsSummaryLoading] = useState(false)
   const [spinGuidance, setSpinGuidance] = useState<SpinGuidanceData | null>(null)
+  const [spinGuidanceStatus, setSpinGuidanceStatus] = useState<'updating' | 'updated' | 'error' | null>(null)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -158,6 +160,7 @@ const PracticeChatPage = () => {
     setHistoryError(null)
     setMessages_([])
     setSpinGuidance(null)
+    setSpinGuidanceStatus(null)
     currentAIMessageIdRef.current = null
     void loadSessionHistory(targetSessionId, controller.signal).then(({ session, messages }) => {
       if (controller.signal.aborted) return
@@ -180,8 +183,14 @@ const PracticeChatPage = () => {
     : null
 
   const handleMessage = useCallback((wsMessage: StreamMessage) => {
+    if (wsMessage.type === 'spin_guidance_status') {
+      const status = wsMessage.data?.status
+      if (status === 'updating' || status === 'updated' || status === 'error') setSpinGuidanceStatus(status)
+      return
+    }
     if (wsMessage.type === 'spin_guidance' && wsMessage.data) {
       setSpinGuidance(wsMessage.data as unknown as SpinGuidanceData)
+      setSpinGuidanceStatus('updated')
       return
     }
     // Handle different message types from WebSocket
@@ -581,6 +590,7 @@ const PracticeChatPage = () => {
           <SpinStageHint
             key={currentSession?.id}
             guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}
+            updateStatus={spinGuidanceStatus}
           />
         </div>
       </div>
