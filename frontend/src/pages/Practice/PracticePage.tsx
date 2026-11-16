@@ -18,6 +18,51 @@ import RoleSelector from '../../components/business/practice/RoleSelector'
 import CustomerPreparation, { PreparationProfile, Background } from '../../components/business/practice/CustomerPreparation'
 
 type Step = 'select' | 'configure' | 'ready'
+type PracticeProfileHistoryEntry = {
+  id: string
+  createdAt: string
+  trainingMode: 'full' | 'rejection'
+  profile: PreparationProfile
+}
+
+const PROFILE_HISTORY_LIMIT = 20
+
+function profileHistoryKey(userId?: string) {
+  return `sales-agent-practice-profile-history:${userId || 'anonymous'}`
+}
+
+function readProfileHistory(userId?: string): PracticeProfileHistoryEntry[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(profileHistoryKey(userId)) || '[]')
+    if (!Array.isArray(value)) return []
+    return value.filter((entry): entry is PracticeProfileHistoryEntry =>
+      entry && typeof entry === 'object' &&
+      typeof entry.id === 'string' && typeof entry.createdAt === 'string' && !Number.isNaN(Date.parse(entry.createdAt)) &&
+      (entry.trainingMode === 'full' || entry.trainingMode === 'rejection') &&
+      entry.profile && typeof entry.profile === 'object' &&
+      ['industry', 'product', 'target', 'organization', 'needs', 'preferences', 'goal']
+        .every(key => typeof entry.profile[key as keyof PreparationProfile] === 'string')
+    ).slice(0, PROFILE_HISTORY_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+function saveProfileHistory(userId: string | undefined, profile: PreparationProfile, trainingMode: 'full' | 'rejection') {
+  const entry: PracticeProfileHistoryEntry = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+    trainingMode,
+    profile,
+  }
+  const history = [entry, ...readProfileHistory(userId)].slice(0, PROFILE_HISTORY_LIMIT)
+  try {
+    localStorage.setItem(profileHistoryKey(userId), JSON.stringify(history))
+  } catch {
+    // Saving history is optional; it must not block a practice session.
+  }
+  return history
+}
 
 const PracticePage = () => {
   const navigate = useNavigate()
@@ -48,6 +93,9 @@ const PracticePage = () => {
 
   const [trainingMode, setTrainingMode] = useState<'full' | 'rejection'>('full')
   const [draft, setDraft] = useState<Partial<PreparationProfile>>(initialProfile)
+  const [profileHistory, setProfileHistory] = useState<PracticeProfileHistoryEntry[]>([])
+  const [showProfileHistory, setShowProfileHistory] = useState(false)
+  const [preparationRevision, setPreparationRevision] = useState(0)
   const moduleTitle = trainingMode === 'rejection' ? '拒绝挽回' : '完整销售对练'
   const [currentStep, setCurrentStep] = useState<Step>('select')
   const [isStarting, setIsStarting] = useState(false)
@@ -56,6 +104,11 @@ const PracticePage = () => {
   useEffect(() => {
     fetchScenarios()
   }, [fetchScenarios])
+
+  useEffect(() => {
+    setProfileHistory(readProfileHistory(user?.id))
+    setShowProfileHistory(false)
+  }, [user?.id])
 
   // Navigate to chat page when session is ready
   useEffect(() => {
@@ -98,6 +151,7 @@ const PracticePage = () => {
           throw new Error(error instanceof Error ? `对话前 PDF 保存失败：${error.message}` : '对话前 PDF 保存失败，请重试')
         }
       }
+      setProfileHistory(saveProfileHistory(user?.id, profile, trainingMode))
       setCurrentStep('ready')
     } catch (error) {
       setStartError(error instanceof Error ? error.message : '启动对练失败')
@@ -175,25 +229,75 @@ const PracticePage = () => {
         {/* Step 2: Role Configuration */}
         {currentStep === 'configure' && (
           <div className="bg-white rounded-xl shadow-sm p-6">
-            <div className="flex items-center justify-between mb-6">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">准备针对性对练</h2>
-                <p className="text-sm text-gray-500 mt-1">
-                  当前模块: <span className="font-medium text-primary">{moduleTitle}</span>
-                </p>
+            <div className="mb-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">准备针对性对练</h2>
+                  <p className="text-sm text-gray-500 mt-1">
+                    当前模块: <span className="font-medium text-primary">{moduleTitle}</span>
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-expanded={showProfileHistory}
+                    aria-controls="practice-profile-history"
+                    onClick={() => setShowProfileHistory(value => !value)}
+                    className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                  >
+                    历史填写
+                  </button>
+                  <button
+                    onClick={() => {
+                      selectScenario(null)
+                      setCurrentStep('select')
+                    }}
+                    className="text-sm text-gray-500 hover:text-gray-700"
+                  >
+                    返回选择模块
+                  </button>
+                </div>
               </div>
-              <button
-                onClick={() => {
-                  selectScenario(null)
-                  setCurrentStep('select')
-                }}
-                className="text-sm text-gray-500 hover:text-gray-700"
-              >
-                返回选择模块
-              </button>
+              {showProfileHistory && (
+                <div id="practice-profile-history" className="mt-4 rounded-lg border border-blue-100 bg-blue-50/50 p-4" aria-label="历史填写记录">
+                  <h3 className="mb-3 text-sm font-semibold text-gray-800">历史填写</h3>
+                  {profileHistory.length === 0 ? (
+                    <p className="text-sm text-gray-500">还没有成功开始过的对练记录。</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {profileHistory.map(entry => (
+                        <li key={entry.id} className="flex flex-col gap-3 rounded-lg border bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-gray-900">
+                              {entry.profile.organization || entry.profile.target || entry.profile.product || '未命名对象'}
+                            </p>
+                            <p className="mt-1 truncate text-xs text-gray-600">
+                              {entry.trainingMode === 'rejection' ? '拒绝挽回' : '完整销售对练'} · {entry.profile.target || entry.profile.product}
+                            </p>
+                            <p className="mt-1 text-xs text-gray-400">{new Date(entry.createdAt).toLocaleString()}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDraft({ ...entry.profile })
+                              setTrainingMode(entry.trainingMode)
+                              setPreparationRevision(value => value + 1)
+                              setShowProfileHistory(false)
+                              setStartError(null)
+                            }}
+                            className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                          >
+                            一键使用
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
 
-            <CustomerPreparation trainingMode={trainingMode} onProfileChange={setDraft} initialProfile={draft} onStart={startPractice} starting={isStarting} />
+            <CustomerPreparation key={preparationRevision} trainingMode={trainingMode} onProfileChange={setDraft} initialProfile={draft} onStart={startPractice} starting={isStarting} />
             <details className="mt-6">
               <summary className="cursor-pointer text-sm text-gray-500">调整模拟角色风格（可选）</summary>
               <RoleSelector selectedConfig={selectedRoleConfig} onChange={handleRoleConfigChange} />

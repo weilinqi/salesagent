@@ -19,7 +19,7 @@ export interface KnowledgeRef {
 export interface StreamMessage {
   type: 'user_message' | 'user_message_ack' | 'ai_message' | 'ai_message_audio' | 'ai_streaming_start' | 'ai_streaming_update' |
         'ai_streaming_end' | 'audio_chunk' | 'backchannel' | 'status_update' |
-        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'spin_guidance' | 'system'
+        'stop_playback' | 'playback_stopped' | 'summary_trigger' | 'phase_complete' | 'spin_guidance' | 'spin_guidance_status' | 'system'
   id?: string
   content?: string
   audio_data?: string
