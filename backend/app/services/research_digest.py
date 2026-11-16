@@ -42,6 +42,16 @@ async def identify_roles(organization, product, needs, target):
             if re.search(r'学校|中学|[一二三四五六七八九十]中|大学|小学', name):
                 roles['customer'] = name.strip()[:200]
                 break
+    # This field is explicitly the prospect's associated organization. When it
+    # contains one name, do not let the model relabel it as the seller unless the
+    # same name is actually present in the product/brand description.
+    org_names = list(dict.fromkeys(x.strip() for x in re.split(r'[、,，;；\n]+', organization) if x.strip()))
+    if len(org_names) == 1:
+        name = org_names[0][:200]
+        if name in product and name not in target:
+            roles['seller'], roles['customer'] = name, ''
+        else:
+            roles['customer'], roles['seller'] = name, ''
     if roles['customer'] == roles['seller']:
         roles['customer'] = ''
     return roles
@@ -65,6 +75,33 @@ def make_plans(roles):
         grades = ' '.join(dict.fromkeys(re.findall(r'高[一二三]|初[一二三]|[一二三四五六]年级', context)))
         plans.append(('通用课程参考', f'{grades} {scope} 课程标准 教学大纲 教育部门', scope, subjects))
     return plans
+
+
+def entity_aliases(name):
+    """Common organization spellings used in public search results."""
+    name = (name or '').strip()
+    if not name:
+        return []
+    aliases = [name]
+    shortened = re.sub(r'(有限责任公司|股份有限公司|集团有限公司|有限公司|股份公司|集团公司|集团)$', '', name).strip()
+    if len(shortened) >= 2:
+        aliases.append(shortened)
+    if name.startswith('中国') and len(name) > 4:
+        aliases.append(name[2:])
+    aliases.extend({
+        '海底捞国际控股有限公司': ['海底捞国际', '海底捞', 'Haidilao International', 'Haidilao'],
+        '比亚迪汽车工业有限公司': ['比亚迪汽车工业', '比亚迪汽车', '比亚迪', 'BYD'],
+        '中国东方航空集团有限公司': ['中国东航', '东航'],
+        '中国东方航空': ['中国东航', '东航'],
+        '学而思': ['学而思培优', '学而思网校'],
+    }.get(name, []))
+    return list(dict.fromkeys(alias for alias in aliases if len(alias) >= 2))
+
+
+def entity_matches(name, corpus):
+    normalize = lambda value: re.sub(r'[^\w\u4e00-\u9fff]+', '', value.casefold())
+    folded = normalize(corpus)
+    return any(normalize(alias) in folded for alias in entity_aliases(name))
 
 
 async def summarize(roles, evidence):
