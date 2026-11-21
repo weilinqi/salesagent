@@ -110,6 +110,8 @@ const PracticeChatPage = () => {
   const [isSummaryLoading, setIsSummaryLoading] = useState(false)
   const [spinGuidance, setSpinGuidance] = useState<SpinGuidanceData | null>(null)
   const [spinGuidanceStatus, setSpinGuidanceStatus] = useState<'updating' | 'updated' | 'error' | null>(null)
+  const [spinGuidanceError, setSpinGuidanceError] = useState<string | null>(null)
+  const [spinGuidanceDurationMs, setSpinGuidanceDurationMs] = useState<number | null>(null)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -161,6 +163,8 @@ const PracticeChatPage = () => {
     setMessages_([])
     setSpinGuidance(null)
     setSpinGuidanceStatus(null)
+    setSpinGuidanceError(null)
+    setSpinGuidanceDurationMs(null)
     currentAIMessageIdRef.current = null
     void loadSessionHistory(targetSessionId, controller.signal).then(({ session, messages }) => {
       if (controller.signal.aborted) return
@@ -185,12 +189,26 @@ const PracticeChatPage = () => {
   const handleMessage = useCallback((wsMessage: StreamMessage) => {
     if (wsMessage.type === 'spin_guidance_status') {
       const status = wsMessage.data?.status
-      if (status === 'updating' || status === 'updated' || status === 'error') setSpinGuidanceStatus(status)
+      if (status === 'updating' || status === 'updated' || status === 'error') {
+        setSpinGuidanceStatus(status)
+        if (status === 'updating') setSpinGuidanceDurationMs(null)
+        const duration = wsMessage.data?.duration_ms
+        if ((status === 'updated' || status === 'error') && typeof duration === 'number') {
+          setSpinGuidanceDurationMs(duration)
+        }
+        const reason = wsMessage.data?.reason
+        const httpStatus = wsMessage.data?.http_status
+        setSpinGuidanceError(status === 'error'
+          ? [typeof reason === 'string' ? reason : null,
+            typeof httpStatus === 'number' ? `HTTP ${httpStatus}` : null]
+            .filter(Boolean).join(' · ') || null
+          : null)
+      }
       return
     }
     if (wsMessage.type === 'spin_guidance' && wsMessage.data) {
       setSpinGuidance(wsMessage.data as unknown as SpinGuidanceData)
-      setSpinGuidanceStatus('updated')
+      setSpinGuidanceError(null)
       return
     }
     // Handle different message types from WebSocket
@@ -591,6 +609,8 @@ const PracticeChatPage = () => {
             key={currentSession?.id}
             guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}
             updateStatus={spinGuidanceStatus}
+            updateError={spinGuidanceError}
+            updateDurationMs={spinGuidanceDurationMs}
           />
         </div>
       </div>

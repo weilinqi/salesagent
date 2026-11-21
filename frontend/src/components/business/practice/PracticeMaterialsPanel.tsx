@@ -440,8 +440,15 @@ export default function PracticeMaterialsPanel({
                   <p className="truncate text-sm font-medium text-gray-800">{currentItem?.title || '资料查询'}</p>
                   {pinned && <span className="text-[11px] text-amber-700">当前资料已固定</span>}
                 </div>
-                {currentItem && <button type="button" onClick={togglePin} className="shrink-0 text-xs text-primary hover:underline">
-                  {pinned ? '解除固定' : '固定此资料'}
+                {currentItem && <button type="button" onClick={togglePin}
+                  aria-label={pinned ? '解除固定' : '固定此资料'}
+                  title={pinned ? '解除固定' : '固定此资料'}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary text-black">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill={pinned ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6 shrink-0 rotate-45">
+                    <path d="M12 17v5" />
+                    <path d="M9 3h6" />
+                    <path d="M10 3v5l-4 4v2h12v-2l-4-4V3" />
+                  </svg>
                 </button>}
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto p-4">

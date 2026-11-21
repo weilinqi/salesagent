@@ -174,33 +174,31 @@ async def update_guidance(session_id: str) -> dict[str, Any] | None:
     """Run a bounded tool-calling LangGraph agent and publish to the active socket."""
     from app.websocket.manager import manager, session_manager
 
-    try:
-        previous = getattr(manager, "_spin_guidance", {}).get(session_id, {})
-        context = session_manager.get_context(session_id) or []
-        recent = context[-20:]
-        transcript = "\n".join(
-            f"{'家长' if row.get('role') == 'ai' else '销售'}：{str(row.get('content') or '')[:420]}"
-            for row in recent if row.get("role") in ("user", "ai", "assistant")
-        )[-6000:]
-        round_number = sum(1 for row in context if row.get("role") == "user")
-        info = session_manager.get_session_info(session_id) or {}
-        phase = info.get("current_phase") or "discovery"
-        result = await _graph.ainvoke({
-                                        "transcript": transcript,
-                                        "phase": phase,
-                                        "round_number": round_number,
-                                        "previous_guidance": previous,
-                                        "references": previous.get("references", []),
-                                        "last_search_query": previous.get("last_search_query", ""),
-                                    },
-                                      config={"recursion_limit": 5})
-        guidance = _normalize(result)
-        states = getattr(manager, "_spin_guidance", None)
-        if states is None:
-            manager._spin_guidance = states = {}
-        states[session_id] = guidance
-        await manager.send_message(session_id, {"type": "spin_guidance", "data": guidance})
-        return guidance
-    except Exception:
-        logger.exception("SPIN guidance update failed for session")
-        return None
+    previous = getattr(manager, "_spin_guidance", {}).get(session_id, {})
+    context = session_manager.get_context(session_id) or []
+    recent = context[-20:]
+    transcript = "\n".join(
+        f"{'家长' if row.get('role') == 'ai' else '销售'}：{str(row.get('content') or '')[:420]}"
+        for row in recent if row.get("role") in ("user", "ai", "assistant")
+    )[-6000:]
+    round_number = sum(1 for row in context if row.get("role") == "user")
+    info = session_manager.get_session_info(session_id) or {}
+    phase = info.get("current_phase") or "discovery"
+    result = await _graph.ainvoke(
+        {
+            "transcript": transcript,
+            "phase": phase,
+            "round_number": round_number,
+            "previous_guidance": previous,
+            "references": previous.get("references", []),
+            "last_search_query": previous.get("last_search_query", ""),
+        },
+        config={"recursion_limit": 5},
+    )
+    guidance = _normalize(result)
+    states = getattr(manager, "_spin_guidance", None)
+    if states is None:
+        manager._spin_guidance = states = {}
+    states[session_id] = guidance
+    await manager.send_message(session_id, {"type": "spin_guidance", "data": guidance})
+    return guidance
