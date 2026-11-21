@@ -44,6 +44,39 @@ class MaterialTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['sources'][0]['date'], '2026-09-01')
         self.assertIn('mp.weixin.qq.com', result['sources'][0]['publisher'])
 
+    async def test_company_background_accepts_common_alias_without_fixed_profile_terms(self):
+        rows = [dict(title='海底捞', snippet='海底捞以火锅餐饮服务为主要业务，并持续拓展门店。',
+                     url='https://www.haidilao.com/about')]
+        with patch('app.services.sales_material.search_via_mcp', new=AsyncMock(return_value=rows)):
+            result = await research('海底捞国际控股有限公司', '企业差旅管理', '差旅预订与费用管理', '行政采购负责人')
+        self.assertIsNotNone(result['overview'])
+        self.assertEqual(result['overview']['url'], rows[0]['url'])
+
+    async def test_explicit_prospect_organization_is_not_misclassified_as_seller(self):
+        from app.services.research_digest import identify_roles
+        organization = '海底捞国际控股有限公司'
+        with patch('app.services.research_digest.ask_json', new=AsyncMock(return_value={
+            'seller': organization, 'customer': ''})):
+            roles = await identify_roles(organization, '企业差旅管理服务', '差旅费用管理', '行政采购负责人')
+        self.assertEqual(roles['customer'], organization)
+        self.assertEqual(roles['seller'], '')
+
+    async def test_search_failure_still_returns_user_context_background(self):
+        with patch('app.services.sales_material.search_via_mcp', new=AsyncMock(side_effect=RuntimeError())):
+            result = await research('海底捞国际控股有限公司', '企业差旅管理', '差旅费用管理', '行政采购负责人')
+        self.assertTrue(result['basic_background'])
+        self.assertIn('海底捞国际控股有限公司', result['basic_background'])
+        self.assertIn('不代表已核实', result['basic_background'])
+
+    def test_pdf_shows_user_context_when_search_has_no_results(self):
+        body = MaterialRequest(profile={'organization':'海底捞国际控股有限公司','product':'企业差旅管理'}, background={
+            'digest_version':1, 'organization':'海底捞国际控股有限公司',
+            'basic_background':'已知情景信息：机构/公司：海底捞国际控股有限公司；产品或服务：企业差旅管理。以上仅为使用者填写内容，不代表已核实的机构事实。'})
+        reader = PdfReader(io.BytesIO(render_material(body)))
+        text = ''.join(page.extract_text() for page in reader.pages)
+        self.assertIn('海底捞国际控股有限公司', text)
+        self.assertIn('不代表已核实', text)
+
     async def test_outage_has_no_invented_results(self):
         with patch('app.services.sales_material.search_via_mcp', new=AsyncMock(side_effect=RuntimeError())):
             result = await research('', '适老手机', '', '老人')
