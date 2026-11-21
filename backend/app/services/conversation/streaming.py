@@ -384,9 +384,15 @@ async def parallel_context_assembly(
         return detect_emotion(user_text, customer_type, history)
 
     async def rag():
-        """RAG 检索知识库（保留功能）"""
+        """RAG 检索知识库（保留功能）
+
+        注意：检索内部会加载 embedding 模型（首次可能下载几百 MB），
+        这是同步阻塞操作，必须放到线程里执行，否则整个事件循环会被卡住，
+        表现就是「对话没有任何回复、页面请求全部超时」。
+        """
         try:
-            refs = handler._retrieve_knowledge_references(
+            refs = await asyncio.to_thread(
+                handler._retrieve_knowledge_references,
                 user_message=user_text,
                 conversation_history=history,
                 scenario=scenario,

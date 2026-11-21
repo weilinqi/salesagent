@@ -2,6 +2,7 @@
 Embedding服务 - 文本向量化
 """
 import os
+import threading
 from typing import List, Optional
 from abc import ABC, abstractmethod
 
@@ -229,8 +230,23 @@ class ChineseEmbeddingModel(EmbeddingModel):
         self._hf_endpoint = os.getenv("HF_ENDPOINT", "https://hf-mirror.com")
         # Hash embedding后备
         self._hash_embedding = HashEmbeddingModel(dimension=768)
+        # 只允许一个线程真正加载/下载模型，其余线程等它完成
+        self._load_lock = threading.Lock()
 
     def _load_model(self):
+        """懒加载模型（线程安全）。
+
+        首次加载可能要下载几百 MB 的模型权重。如果多个请求同时触发，
+        会变成多次重复下载并把服务拖垮，所以这里用锁串行化。
+        """
+        if self._is_loaded:
+            return
+        with self._load_lock:
+            if self._is_loaded:
+                return
+            self._load_model_locked()
+
+    def _load_model_locked(self):
         """懒加载模型
 
         优先用 sentence_transformers（封装的 mean pooling + 归一化）。
