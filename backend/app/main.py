@@ -374,6 +374,40 @@ def _schedule_spin_guidance_update(session_id: str) -> asyncio.Task:
     return task
 
 
+async def _safe_update_deal_progress(session_id: str) -> None:
+    """对练推进分析的安全壳：失败只记日志，绝不影响对话本身。"""
+    try:
+        from app.services.conversation.deal_graph import analyze_session
+        await asyncio.wait_for(analyze_session(session_id), timeout=40)
+    except asyncio.CancelledError:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning("deal progress analysis timed out")
+    except Exception:
+        logger.exception("deal progress analysis failed")
+
+
+def _schedule_deal_progress(session_id: str) -> asyncio.Task:
+    """同一会话只保留最新一次推进分析，避免旧的覆盖新的。"""
+    tasks = getattr(manager, "_deal_tasks", None)
+    if not isinstance(tasks, dict):
+        manager._deal_tasks = tasks = {}
+
+    previous = tasks.get(session_id)
+    if previous and not previous.done():
+        previous.cancel()
+
+    task = asyncio.create_task(_safe_update_deal_progress(session_id))
+    tasks[session_id] = task
+
+    def discard_finished(completed: asyncio.Task) -> None:
+        if tasks.get(session_id) is completed:
+            tasks.pop(session_id, None)
+
+    task.add_done_callback(discard_finished)
+    return task
+
+
 async def _transcribe_voice_turn(audio_data: bytes, audio_mime: str) -> str:
     """Transcribe a realtime voice turn so coaching sees the same text as typed turns."""
     minimax = get_minimax_service()
@@ -557,6 +591,7 @@ async def process_user_message(websocket, session_id: str, content: str,
             save_message_to_db(session_id, "ai", full_response, ai_audio_bytes, "audio/mpeg")
         if user_text and full_response:
             _schedule_spin_guidance_update(session_id)
+            _schedule_deal_progress(session_id)
         await _maybe_transition_phase(session_id)
     except Exception as e:
         print(f"[LLM] error: {e}")
@@ -580,11 +615,13 @@ async def _send_mock_response(session_id: str, content: str) -> None:
 
 
 async def _maybe_transition_phase(session_id: str) -> None:
-    """DEPRECATED: 硬性按消息数切阶段已废弃。
+    """阶段推进已改由对练推进模型（deal_graph）负责。
 
-    之前按消息数 (3/6/9/12) 强行切 SPIN 阶段，导致销售员聊到一半被
-    "赶" 到下一阶段，破坏自然对话节奏。已废弃，函数保留为空以
-    兼容旧调用方；前端也不再消费 phase_complete 消息。
+    历史上这里按消息数 (3/6/9/12) 强行切 SPIN 阶段，导致销售员聊到一半
+    被"赶"到下一阶段。现在阶段由 ``services/conversation/deal_state``
+    按"信息是否收集到 + 是否已介绍课程 + 是否已处理异议"判定，
+    门槛满足才推进、每轮最多前进一阶、且允许跳过没发生的异议阶段，
+    因此这里不再做任何硬切。保留函数只为兼容旧调用方。
     """
     return
 

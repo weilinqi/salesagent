@@ -3,6 +3,8 @@
  */
 import axios from 'axios'
 
+import type { DealProgress } from '../components/business/practice/DealProgressPanel'
+
 const API_BASE = '/api/v1'
 
 export interface Scenario {
@@ -214,9 +216,20 @@ const api = {
 
   /**
    * 结束对练会话
+   *
+   * result 可选：won / trial / lost_explicit / lost_soft / incomplete。
+   * 不传时由后端按最后的对练推进状态自动推断。
    */
-  async endSession(sessionId: string): Promise<void> {
-    await axios.post(`${API_BASE}/practice/sessions/${sessionId}/end`)
+  async endSession(sessionId: string, result?: string): Promise<void> {
+    await axios.post(`${API_BASE}/practice/sessions/${sessionId}/end`, result ? { result } : {})
+  },
+
+  /**
+   * 读取对练推进状态（阶段/槽位/覆盖率/结单结果）
+   */
+  async getDealState(sessionId: string): Promise<DealProgress> {
+    const response = await axios.get(`${API_BASE}/practice/sessions/${sessionId}/deal-state`)
+    return response.data
   },
 
   /**

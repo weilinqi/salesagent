@@ -57,6 +57,26 @@ class PracticeSession(Base):
     messages = relationship("PracticeMessage", back_populates="session")
 
 
+class PracticeDealState(Base):
+    """对练推进状态：槽位、阶段、覆盖率、结单结果。
+
+    独立成表而不是给 practice_sessions 加列，是因为项目用
+    ``Base.metadata.create_all`` 建表、没有 alembic 迁移；
+    新表对已有数据库自动生效，加列则不会。
+    """
+    __tablename__ = "practice_deal_states"
+
+    session_id = Column(String(36), ForeignKey("practice_sessions.id"), primary_key=True)
+    template_id = Column(String(40), default="k12_junior")   # 学段模板
+    stage = Column(String(20), default="opening")            # opening/discovery/diagnosis/solution/objection/closing
+    slots = Column(JSON, default={})                         # {key: {value, evidence, round, revised}}
+    flags = Column(JSON, default={})                         # parent_turns/course_introduced/objection_raised
+    coverage_pct = Column(Integer, default=0)                # 必填项覆盖率
+    closing = Column(JSON, default={})                       # {suggest, reason, result}
+    deal_result = Column(String(20), nullable=True)          # won/trial/lost_explicit/lost_soft/incomplete
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class PracticeMessage(Base):
     """Practice message model"""
     __tablename__ = "practice_messages"

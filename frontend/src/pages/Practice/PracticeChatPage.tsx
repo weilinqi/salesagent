@@ -19,6 +19,7 @@ import { useAudioStream } from '../../hooks/useAudioStream'
 import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
 import SpinStageHint from '../../components/business/practice/SpinStageHint'
+import DealProgressPanel, { type DealProgress } from '../../components/business/practice/DealProgressPanel'
 import PracticeMaterialsPanel from '../../components/business/practice/PracticeMaterialsPanel'
 import api, { RoleConfig } from '../../api/practice'
 import { loadSessionHistory } from '../../utils/sessionHistory'
@@ -112,6 +113,7 @@ const PracticeChatPage = () => {
   const [spinGuidanceStatus, setSpinGuidanceStatus] = useState<'updating' | 'updated' | 'error' | null>(null)
   const [spinGuidanceError, setSpinGuidanceError] = useState<string | null>(null)
   const [spinGuidanceDurationMs, setSpinGuidanceDurationMs] = useState<number | null>(null)
+  const [dealProgress, setDealProgress] = useState<DealProgress | null>(null)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -165,12 +167,16 @@ const PracticeChatPage = () => {
     setSpinGuidanceStatus(null)
     setSpinGuidanceError(null)
     setSpinGuidanceDurationMs(null)
+    setDealProgress(null)
     currentAIMessageIdRef.current = null
     void loadSessionHistory(targetSessionId, controller.signal).then(({ session, messages }) => {
       if (controller.signal.aborted) return
       resumeSession(session)
       setMessages_(messages)
       setLoadedSessionId(session.id)
+      void api.getDealState(session.id).then((progress) => {
+        if (!controller.signal.aborted) setDealProgress(progress)
+      }).catch(() => { /* 历史会话可能还没有推进状态，忽略 */ })
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return
       setHistoryError(axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string'
@@ -209,6 +215,10 @@ const PracticeChatPage = () => {
     if (wsMessage.type === 'spin_guidance' && wsMessage.data) {
       setSpinGuidance(wsMessage.data as unknown as SpinGuidanceData)
       setSpinGuidanceError(null)
+      return
+    }
+    if (wsMessage.type === 'deal_progress' && wsMessage.data) {
+      setDealProgress(wsMessage.data as unknown as DealProgress)
       return
     }
     // Handle different message types from WebSocket
@@ -605,6 +615,7 @@ const PracticeChatPage = () => {
               updatedAt={spinGuidance?.updated_at}
             />
           </div>
+          <DealProgressPanel progress={dealProgress} />
           <SpinStageHint
             key={currentSession?.id}
             guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}
