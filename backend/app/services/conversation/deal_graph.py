@@ -176,6 +176,10 @@ async def analyze_session(session_id: str) -> dict[str, Any] | None:
             manager._deal_states = cached = {}
         state = dict(cached.get(session_id) or {})
         if not state:
+            # 后端重启后内存缓存是空的，先把上次落库的槽位捞回来，
+            # 否则已经问到的信息会凭空清零（看板覆盖率先涨后掉）
+            state = dict(load_state(session_id) or {})
+        if not state:
             state = deal_state.new_state(
                 resolve_template_id(
                     deal_state.extract_grade_token(info.get("customer_grade") or ""),
