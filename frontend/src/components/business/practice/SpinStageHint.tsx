@@ -19,6 +19,8 @@ interface Guidance {
 interface Props {
   guidance: Guidance
   updateStatus?: 'updating' | 'updated' | 'error' | null
+  updateError?: string | null
+  updateDurationMs?: number | null
   className?: string
 }
 
@@ -27,7 +29,13 @@ const stageName: Record<string, string> = {
   Implication: '影响探索', 'Need-payoff': '需求与价值',
 }
 
-export default function SpinStageHint({ guidance, updateStatus, className = '' }: Props) {
+export default function SpinStageHint({ guidance, updateStatus, updateError, updateDurationMs, className = '' }: Props) {
+  const durationLabel = updateDurationMs == null
+    ? ''
+    : updateDurationMs < 1000
+      ? `${updateDurationMs} 毫秒`
+      : `${(updateDurationMs / 1000).toFixed(1)} 秒`
+
   return (
     <div className={`space-y-3 ${className}`}>
       <section className="rounded-lg border border-blue-200 bg-blue-50 p-3">
@@ -35,9 +43,17 @@ export default function SpinStageHint({ guidance, updateStatus, className = '' }
           <span className="text-xs font-semibold text-blue-700">{stageName[guidance.phase] || guidance.phase}</span>
           <span className={`text-[10px] ${updateStatus === 'error' ? 'text-amber-700' : 'text-blue-600'}`}>
             {updateStatus === 'updating'
-              ? '本轮分析中…'
+              ? <span className="inline-flex items-center gap-1" role="status" aria-live="polite">
+                  <svg className="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  正在更新…
+                </span>
               : updateStatus === 'error'
-                ? '本轮更新失败'
+                ? `更新失败${updateError ? `（${updateError}）` : ''}${durationLabel ? ` · ${durationLabel}` : ''}`
+                : updateStatus === 'updated'
+                  ? `第 ${guidance.round_number || 1} 轮 · 已更新${durationLabel ? ` · ${durationLabel}` : ''}`
                 : guidance.isInitial
                   ? '开场提示'
                   : `第 ${guidance.round_number || 1} 轮 · ${guidance.updated_at ? new Date(guidance.updated_at).toLocaleTimeString() : '实时更新'}`}

@@ -318,22 +318,60 @@ async def generate_opening_message(scenario_name: str, scenario_id: str,
 # =============================================================================
 
 async def _safe_update_spin_guidance(session_id: str) -> None:
-    from app.websocket.manager import manager
+    started_at = time.perf_counter()
     try:
         await manager.send_message(session_id, {
             "type": "spin_guidance_status", "data": {"status": "updating"}
         })
         from app.services.conversation.spin_guidance import update_guidance
-        guidance = await update_guidance(session_id)
+        guidance = await asyncio.wait_for(update_guidance(session_id), timeout=45)
+        if not guidance:
+            raise RuntimeError("empty_result")
+        duration_ms = round((time.perf_counter() - started_at) * 1000)
         await manager.send_message(session_id, {
             "type": "spin_guidance_status",
-            "data": {"status": "updated" if guidance else "error"},
+            "data": {"status": "updated", "duration_ms": duration_ms},
         })
-    except Exception:
-        logger.exception("SPIN guidance agent unavailable")
+    except asyncio.TimeoutError as error:
+        logger.warning("SPIN guidance update timed out for session")
+        duration_ms = round((time.perf_counter() - started_at) * 1000)
         await manager.send_message(session_id, {
-            "type": "spin_guidance_status", "data": {"status": "error"}
+            "type": "spin_guidance_status",
+            "data": {"status": "error", "reason": "timeout", "duration_ms": duration_ms},
         })
+    except Exception as error:
+        logger.exception("SPIN guidance agent unavailable")
+        duration_ms = round((time.perf_counter() - started_at) * 1000)
+        await manager.send_message(session_id, {
+            "type": "spin_guidance_status",
+            "data": {
+                "status": "error",
+                "reason": "empty_result" if str(error) == "empty_result" else type(error).__name__,
+                "http_status": getattr(error, "http_status", None),
+                "duration_ms": duration_ms,
+            },
+        })
+
+
+def _schedule_spin_guidance_update(session_id: str) -> asyncio.Task:
+    """Keep only the newest pending analysis for a session to avoid stale/racing updates."""
+    tasks = getattr(manager, "_spin_guidance_tasks", None)
+    if not isinstance(tasks, dict):
+        manager._spin_guidance_tasks = tasks = {}
+
+    previous = tasks.get(session_id)
+    if previous and not previous.done():
+        previous.cancel()
+
+    task = asyncio.create_task(_safe_update_spin_guidance(session_id))
+    tasks[session_id] = task
+
+    def discard_finished(completed: asyncio.Task) -> None:
+        if tasks.get(session_id) is completed:
+            tasks.pop(session_id, None)
+
+    task.add_done_callback(discard_finished)
+    return task
 
 
 async def _transcribe_voice_turn(audio_data: bytes, audio_mime: str) -> str:
@@ -518,12 +556,7 @@ async def process_user_message(websocket, session_id: str, content: str,
                 ai_audio_bytes = None
             save_message_to_db(session_id, "ai", full_response, ai_audio_bytes, "audio/mpeg")
         if user_text and full_response:
-            guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
-            if guidance_tasks is None:
-                manager._spin_guidance_tasks = guidance_tasks = set()
-            guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
-            guidance_tasks.add(guidance_task)
-            guidance_task.add_done_callback(guidance_tasks.discard)
+            _schedule_spin_guidance_update(session_id)
         await _maybe_transition_phase(session_id)
     except Exception as e:
         print(f"[LLM] error: {e}")
@@ -815,7 +848,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         return task
 
     if not saved_guidance and session_manager.get_context(session_id):
-        spawn(_safe_update_spin_guidance(session_id))
+        _schedule_spin_guidance_update(session_id)
 
     # ------------------------------------------------------------------
     # Fire-and-forget persona + opening message (slow LLM)
@@ -1064,12 +1097,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                         "audio/wav" if realtime_turn["audio"] else None,
                     )
                 if round_complete:
-                    guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
-                    if guidance_tasks is None:
-                        manager._spin_guidance_tasks = guidance_tasks = set()
-                    guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
-                    guidance_tasks.add(guidance_task)
-                    guidance_task.add_done_callback(guidance_tasks.discard)
+                    _schedule_spin_guidance_update(session_id)
                 realtime_turn["text"] = ""
                 realtime_turn["audio"] = b""
                 if session_manager.should_insert_backchannel(session_id):
