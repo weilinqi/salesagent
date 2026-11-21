@@ -3,6 +3,7 @@ Practice API endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from uuid import UUID
@@ -34,6 +35,15 @@ from app.schemas.practice import (
     AIClientRoleCreate,
     AIClientRoleResponse
 )
+
+class EndSessionRequest(BaseModel):
+    """结束会话时可显式指定结单结果。
+
+    result 取值：won / trial / lost_explicit / lost_soft / incomplete。
+    不传则由后端按最后的对练推进状态自动推断。
+    """
+    result: Optional[str] = None
+
 
 async def require_practice_access(request: Request, db: Session = Depends(get_db),
                                   current_user: User = Depends(get_current_user)):
@@ -283,8 +293,27 @@ async def get_session_message_audio(session_id: UUID, message_id: UUID, db: Sess
                         headers={'Cache-Control': 'private, no-store'})
 
 
+@router.get("/sessions/{session_id}/deal-state")
+async def get_deal_state(session_id: UUID, db: Session = Depends(get_db)):
+    """读取对练推进状态：阶段、槽位、覆盖率、缺口、结单结果。
+
+    会话进行中读内存快照，历史会话回退到 practice_deal_states 表。
+    """
+    session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+
+    from app.services.conversation import deal_graph, deal_state
+
+    state = deal_graph.load_state(str(session_id))
+    if state is None:
+        state = deal_state.new_state()
+    return deal_state.build_progress_payload(state)
+
+
 @router.post("/sessions/{session_id}/end")
-async def end_session(session_id: UUID, db: Session = Depends(get_db)):
+async def end_session(session_id: UUID, payload: EndSessionRequest | None = None,
+                      db: Session = Depends(get_db)):
     """结束对练会话"""
     session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
     if not session:
@@ -297,6 +326,14 @@ async def end_session(session_id: UUID, db: Session = Depends(get_db)):
     session.status = "completed"
     session.ended_at = datetime.utcnow()
     db.commit()
+
+    # 结算结单结果（成交/约试听/明确拒绝/考虑中/提前终止）并落库
+    try:
+        from app.services.conversation.deal_graph import finalize as finalize_deal
+        finalize_deal(str(session_id), payload.result if payload else None)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("deal finalize failed", exc_info=True)
 
     # Get conversation context from session manager
     from app.websocket.manager import session_manager
