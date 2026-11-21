@@ -114,6 +114,7 @@ const PracticeChatPage = () => {
   const [spinGuidanceError, setSpinGuidanceError] = useState<string | null>(null)
   const [spinGuidanceDurationMs, setSpinGuidanceDurationMs] = useState<number | null>(null)
   const [dealProgress, setDealProgress] = useState<DealProgress | null>(null)
+  const [isEndingDeal, setIsEndingDeal] = useState(false)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -389,6 +390,19 @@ const PracticeChatPage = () => {
     onDisconnected: handleDisconnected
   })
 
+  const handleEndDeal = useCallback(async () => {
+    const sessionId = currentSession?.id
+    if (!sessionId || isEndingDeal) return
+    setIsEndingDeal(true)
+    try {
+      await api.endSession(sessionId, dealProgress?.closing?.result || undefined)
+      navigate(`/practice/review?sessionId=${sessionId}`)
+    } catch (error) {
+      console.error('结束对练失败', error)
+      setIsEndingDeal(false)
+    }
+  }, [currentSession?.id, dealProgress?.closing?.result, isEndingDeal, navigate])
+
   const handleSendMessage = useCallback((content: string, audioData?: string) => {
     // Add user message to local state
     const userMsg: MessageItem = {
@@ -615,7 +629,7 @@ const PracticeChatPage = () => {
               updatedAt={spinGuidance?.updated_at}
             />
           </div>
-          <DealProgressPanel progress={dealProgress} />
+          <DealProgressPanel progress={dealProgress} onEnd={handleEndDeal} ending={isEndingDeal} />
           <SpinStageHint
             key={currentSession?.id}
             guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}

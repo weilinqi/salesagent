@@ -61,16 +61,22 @@ const resultTone: Record<string, string> = {
 
 interface Props {
   progress: DealProgress | null
+  /** 点击「结束对练」时回调；不传则不显示按钮 */
+  onEnd?: () => void
+  /** 正在结束中 */
+  ending?: boolean
   className?: string
 }
 
-export default function DealProgressPanel({ progress, className = '' }: Props) {
+export default function DealProgressPanel({ progress, onEnd, ending = false, className = '' }: Props) {
   if (!progress) return null
 
   const { coverage, stage_order: order, stage_labels: labels, slots, gaps, closing, deal_result: dealResult } = progress
   const currentIndex = Math.max(order.indexOf(progress.stage), 0)
   const requiredSlots = slots.filter((slot) => slot.level === 'required')
   const filledRequired = requiredSlots.filter((slot) => slot.filled)
+  // 试听谈成了也算成功收尾，不只是"报名"
+  const closeIsGood = closing?.result === 'won' || closing?.result === 'trial'
 
   return (
     <div className={`rounded-xl border border-gray-200 bg-white p-3 space-y-3 ${className}`}>
@@ -166,9 +172,25 @@ export default function DealProgressPanel({ progress, className = '' }: Props) {
 
       {/* 收尾建议 */}
       {closing?.suggest && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5">
-          <p className="text-[11px] font-medium text-blue-700">可以尝试收尾了</p>
-          {closing.reason && <p className="text-[10px] leading-snug text-blue-600">{closing.reason}</p>}
+        <div className={`rounded-lg border px-2 py-1.5 ${closeIsGood ? 'border-emerald-200 bg-emerald-50' : 'border-blue-200 bg-blue-50'}`}>
+          <p className={`text-[11px] font-medium ${closeIsGood ? 'text-emerald-700' : 'text-blue-700'}`}>
+            {closeIsGood ? '已经谈成了，可以结束对练' : '可以尝试收尾了'}
+          </p>
+          {closing.reason && (
+            <p className={`text-[10px] leading-snug ${closeIsGood ? 'text-emerald-600' : 'text-blue-600'}`}>
+              {closing.reason}
+            </p>
+          )}
+          {onEnd && (
+            <button
+              type="button"
+              onClick={onEnd}
+              disabled={ending}
+              className="mt-1.5 w-full rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {ending ? '正在结束…' : '结束对练并生成报告'}
+            </button>
+          )}
         </div>
       )}
 

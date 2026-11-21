@@ -236,7 +236,8 @@ async def analyze_session(session_id: str) -> dict[str, Any] | None:
         cached[session_id] = state
 
         session_manager.update_phase(session_id, stage)
-        _persist(session_id, state)
+        # SQLite 写入放到线程里，避免阻塞事件循环（否则整个服务会卡住不响应）
+        await asyncio.to_thread(_persist, session_id, state)
         payload = deal_state.build_progress_payload(state)
         await manager.send_message(session_id, {"type": "deal_progress", "data": payload})
         return payload

@@ -40,6 +40,16 @@ RESULT_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
     ("lost_soft", ("再想想", "商量", "回去说", "考虑一下", "过几天", "问一下他爸", "问一下他妈")),
 ]
 
+# 家长"表态"的信号：问句里没有这些词时，只能算打听，不能算结单
+# 注意：不要放"安排""来""好"这类词——"怎么安排"是打听，不是表态
+AGREEMENT_MARKERS = ("约", "定", "可以", "行", "吧", "方便", "就")
+
+QUESTION_MARKERS = (
+    "?", "？", "怎么", "如何", "多少", "什么", "哪", "几", "吗", "多久", "是不是",
+)
+
+_WHITESPACE = re.compile(r"\s+")
+
 RESULT_LABELS = {
     "won": "成交",
     "trial": "约了试听",
@@ -267,12 +277,26 @@ def update_flags(flags: dict[str, Any], *, parent_turns: int, parent_text: str, 
 
 
 def detect_result(parent_text: str) -> str | None:
-    """从家长最新话术判断结单结果，判断不出返回 None。"""
+    """从家长最新话术判断结单结果，判断不出返回 None。
+
+    只在"打听"不算表态：家长问"试听课怎么安排？"只是询问细节，
+    不能据此判定他约了试听；必须有表态词（约/安排/可以/吧…）才算。
+    """
     if not parent_text:
         return None
+    text = _WHITESPACE.sub("", parent_text)
+    if not text:
+        return None
+    asking = any(marker in text for marker in QUESTION_MARKERS)
+    agreed = any(marker in text for marker in AGREEMENT_MARKERS)
+
     for result, words in RESULT_SIGNALS:
-        if any(word in parent_text for word in words):
-            return result
+        if not any(word in text for word in words):
+            continue
+        # 成交与试听：纯问句且没有表态词，视为还在打听
+        if result in ("won", "trial") and asking and not agreed:
+            continue
+        return result
     return None
 
 
