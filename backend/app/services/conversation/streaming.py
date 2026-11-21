@@ -342,6 +342,16 @@ async def parallel_context_assembly(
         if msg.get("role") == "ai":
             msg["role"] = "assistant"
 
+    # 主流程在调用本函数前已把本轮销售消息写入 context，
+    # 而 _build_messages 又会在末尾再追加一次 user_text，
+    # 于是模型会连续看到两条一模一样的销售发言。去掉重复的尾条。
+    if (
+        history
+        and history[-1].get("role") == "user"
+        and str(history[-1].get("content") or "").strip() == (user_text or "").strip()
+    ):
+        history = history[:-1]
+
     # 对话账本：回放整段对话（不只用最近 10 条），记录家长问过什么、销售答了什么。
     # 家长的"顾虑/痛点"是人设里的静态文本，每轮都会重新出现在 prompt 里，
     # 没有账本时模型会反复问同一个问题（如"试听课怎么安排"）。
