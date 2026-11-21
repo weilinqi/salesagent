@@ -236,7 +236,7 @@ async def analyze_session(session_id: str) -> dict[str, Any] | None:
         cached[session_id] = state
 
         session_manager.update_phase(session_id, stage)
-        await _persist(session_id, state)
+        _persist(session_id, state)
         payload = deal_state.build_progress_payload(state)
         await manager.send_message(session_id, {"type": "deal_progress", "data": payload})
         return payload

@@ -139,5 +139,52 @@ class EndToEndRuleTests(unittest.TestCase):
         self.assertEqual(deal_state.compute_stage("opening", slots, flags), "discovery")
 
 
+class AnalyzeSessionTests(unittest.TestCase):
+    """端到端跑 analyze_session：必须真的把 deal_progress 推出去。
+
+    回归背景：_persist 是同步函数，曾被误写成 `await _persist(...)`，
+    结果落库成功但推送前抛 TypeError，前端看板停在初始状态永不更新。
+    """
+
+    def test_analyze_session_pushes_progress_event(self):
+        import importlib
+        from unittest.mock import MagicMock
+
+        # 注意：app.websocket.__init__ 导出了 manager 实例，
+        # 因此必须用 importlib 拿模块本身，不能用 from app.websocket import manager。
+        ws_module = importlib.import_module("app.websocket.manager")
+
+        payload = json.dumps({"slots": {"student_grade": {"value": "初二", "evidence": "初二是吧"}}})
+        service = AsyncMock()
+        service.chat = AsyncMock(return_value=payload)
+        send = AsyncMock(return_value=True)
+
+        context = [
+            {"role": "user", "content": "孩子现在几年级？"},
+            {"role": "ai", "content": "初二"},
+        ]
+        with patch.object(ws_module.manager, "send_message", new=send), \
+             patch.object(ws_module.session_manager, "get_context", return_value=context), \
+             patch.object(ws_module.session_manager, "get_session_info", return_value={}), \
+             patch.object(ws_module.session_manager, "update_phase", new=MagicMock()), \
+             patch.object(deal_graph, "_persist") as persist, \
+             patch.object(deal_graph, "get_minimax_service", return_value=service):
+            result = run_async(deal_graph.analyze_session("session-push-test"))
+
+        self.assertIsNotNone(result, "analyze_session 不应返回 None")
+        self.assertEqual(result["template_name"], "K12 · 初中")
+        persist.assert_called_once()
+        send.assert_awaited_once()
+        event = send.await_args.args[1]
+        self.assertEqual(event["type"], "deal_progress")
+        self.assertEqual(event["data"]["stage"], "discovery")
+
+    def test_persist_is_not_awaited(self):
+        """守卫：_persist 必须是同步函数，否则 await 会抛 TypeError。"""
+        import inspect
+
+        self.assertFalse(inspect.iscoroutinefunction(deal_graph._persist))
+
+
 if __name__ == "__main__":
     unittest.main()
