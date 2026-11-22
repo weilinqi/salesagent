@@ -176,6 +176,10 @@ async def analyze_session(session_id: str) -> dict[str, Any] | None:
             manager._deal_states = cached = {}
         state = dict(cached.get(session_id) or {})
         if not state:
+            # 后端重启后内存缓存是空的，先把上次落库的槽位捞回来，
+            # 否则已经问到的信息会凭空清零（看板覆盖率先涨后掉）
+            state = dict(load_state(session_id) or {})
+        if not state:
             state = deal_state.new_state(
                 resolve_template_id(
                     deal_state.extract_grade_token(info.get("customer_grade") or ""),
@@ -236,7 +240,8 @@ async def analyze_session(session_id: str) -> dict[str, Any] | None:
         cached[session_id] = state
 
         session_manager.update_phase(session_id, stage)
-        await _persist(session_id, state)
+        # SQLite 写入放到线程里，避免阻塞事件循环（否则整个服务会卡住不响应）
+        await asyncio.to_thread(_persist, session_id, state)
         payload = deal_state.build_progress_payload(state)
         await manager.send_message(session_id, {"type": "deal_progress", "data": payload})
         return payload

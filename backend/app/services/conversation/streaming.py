@@ -355,17 +355,22 @@ async def parallel_context_assembly(
     # 对话账本：回放整段对话（不只用最近 10 条），记录家长问过什么、销售答了什么。
     # 家长的"顾虑/痛点"是人设里的静态文本，每轮都会重新出现在 prompt 里，
     # 没有账本时模型会反复问同一个问题（如"试听课怎么安排"）。
-    from app.services.conversation import dialogue_ledger
+    # 这里必须兜底：账本出任何问题都不能影响学员听到回复。
+    ledger_text = ""
+    try:
+        from app.services.conversation import dialogue_ledger
 
-    ledger = dialogue_ledger.build_ledger(ctx)
-    deal_snapshot = (getattr(manager, "_deal_states", None) or {}).get(session_id)
-    ledger_text = (
-        dialogue_ledger.render_ledger(
-            ledger,
-            customer_facts=dialogue_ledger.facts_from_deal_state(deal_snapshot),
+        ledger = dialogue_ledger.build_ledger(ctx)
+        deal_snapshot = (getattr(manager, "_deal_states", None) or {}).get(session_id)
+        ledger_text = (
+            dialogue_ledger.render_ledger(
+                ledger,
+                customer_facts=dialogue_ledger.facts_from_deal_state(deal_snapshot),
+            )
+            + dialogue_ledger.render_turn_reminder(ledger)
         )
-        + dialogue_ledger.render_turn_reminder(ledger)
-    )
+    except Exception as error:
+        print(f"[LEDGER] build failed (non-fatal): {type(error).__name__}")
 
     # 并行装配 — 完整保留所有功能
     async def build_msgs():
@@ -379,9 +384,15 @@ async def parallel_context_assembly(
         return detect_emotion(user_text, customer_type, history)
 
     async def rag():
-        """RAG 检索知识库（保留功能）"""
+        """RAG 检索知识库（保留功能）
+
+        注意：检索内部会加载 embedding 模型（首次可能下载几百 MB），
+        这是同步阻塞操作，必须放到线程里执行，否则整个事件循环会被卡住，
+        表现就是「对话没有任何回复、页面请求全部超时」。
+        """
         try:
-            refs = handler._retrieve_knowledge_references(
+            refs = await asyncio.to_thread(
+                handler._retrieve_knowledge_references,
                 user_message=user_text,
                 conversation_history=history,
                 scenario=scenario,

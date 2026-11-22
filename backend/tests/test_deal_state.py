@@ -180,6 +180,18 @@ class ClosingTests(unittest.TestCase):
     def test_no_signal_returns_none(self):
         self.assertIsNone(deal_state.detect_result("孩子最近在学钢琴"))
 
+    def test_asking_about_trial_is_not_agreeing(self):
+        """只是打听试听怎么安排，不能判成"已约试听"。"""
+        self.assertIsNone(deal_state.detect_result("你说的试听课具体讲哪部分？"))
+        self.assertIsNone(deal_state.detect_result("试听课怎么安排？"))
+
+    def test_agreeing_to_trial_counts_as_close(self):
+        self.assertEqual(deal_state.detect_result("那约个试听吧"), "trial")
+        self.assertEqual(deal_state.detect_result("行，安排一节试听可以"), "trial")
+
+    def test_asking_about_enrolling_is_not_won(self):
+        self.assertIsNone(deal_state.detect_result("报名怎么弄？"))
+
     def test_closing_suggested_when_parent_states_intent(self):
         closing = deal_state.detect_closing(
             {"stage": "solution", "round_number": 5, "last_gain_round": 5},

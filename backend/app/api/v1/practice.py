@@ -331,8 +331,9 @@ async def end_session(session_id: UUID, payload: EndSessionRequest | None = None
 
     # 结算结单结果（成交/约试听/明确拒绝/考虑中/提前终止）并落库
     try:
+        import asyncio
         from app.services.conversation.deal_graph import finalize as finalize_deal
-        finalize_deal(str(session_id), payload.result if payload else None)
+        await asyncio.to_thread(finalize_deal, str(session_id), payload.result if payload else None)
     except Exception:
         import logging
         logging.getLogger(__name__).warning("deal finalize failed", exc_info=True)
