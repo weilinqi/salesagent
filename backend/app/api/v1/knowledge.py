@@ -201,7 +201,8 @@ async def search_knowledge(request: KnowledgeSearchRequest):
                                        req.source_filter, req.category)
 
     try:
-        response = await hybrid_search(request, semantic, lexical, search_via_mcp)
+        from app.services.search_router import route_search
+        response = await route_search(request, semantic, lexical, search_via_mcp)
     except RuntimeError:
         raise HTTPException(status_code=503, detail="Knowledge search is temporarily unavailable") from None
     response['results'] = [_search_result(row) for row in response['results']]
