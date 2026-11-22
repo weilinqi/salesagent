@@ -40,11 +40,15 @@ KIND_NONE = "none"
 CONFIDENT = 0.75
 # 证据充分性达到该分才算够用（0-3）
 MIN_SUFFICIENCY = 2
+# 单次搜索的总时间预算（秒）。超过就放弃补救，直接用现有证据返回
+BUDGET_SECONDS = 8.0
 # 单个节点的时间上限（秒），保证整体搜索可控
 CLASSIFY_TIMEOUT = 1.5
 SUFFICIENCY_TIMEOUT = 2.0
 REWRITE_TIMEOUT = 1.5
 WEB_TIMEOUT = 6.0
+# 超时降级时，本地检索自己的上限
+FALLBACK_LOCAL_TIMEOUT = 3.0
 # 分数兜底阈值，仅在没有 LLM 判定时使用
 STRONG_SCORE = 0.75
 
@@ -545,6 +549,27 @@ _graph = _builder.compile()
 # ---------------------------------------------------------------------------
 
 
+async def _fast_local_only(payload: dict[str, Any]) -> dict[str, Any]:
+    """超时降级：只跑本地检索，别再等模型。"""
+    base: SearchState = {
+        "query": payload["query"],
+        "semantic_search": payload["semantic_search"],
+        "keyword_search": payload["keyword_search"],
+        "web_search": payload["web_search"],
+        "request": payload["request"],
+        "trace": ["超时降级：跳过分类与补救"],
+        "notices": ["本次检索耗时过长，已改用本地结果快速返回。"],
+    }
+    try:
+        local_part = await asyncio.wait_for(local_search(base), timeout=FALLBACK_LOCAL_TIMEOUT)
+    except Exception:
+        local_part = {"local": [], "trace": [], "notices": ["本地检索超时"]}
+    merged = await merge({**base, **local_part, "web": []})
+    merged.update({"web": [], "kind": KIND_HYBRID, "sufficiency": 0,
+                   "notices": list(dict.fromkeys([*base["notices"], *(local_part.get("notices") or [])]))})
+    return merged
+
+
 async def route_search(request, semantic_search, keyword_search, web_search) -> dict[str, Any]:
     """按 request.mode 选择实现；auto 走本模块的 LangGraph。"""
     from app.services.rag.hybrid_search import hybrid_search
@@ -555,13 +580,20 @@ async def route_search(request, semantic_search, keyword_search, web_search) -> 
         return await hybrid_search(request, semantic_search, keyword_search, web_search)
 
     started = time.perf_counter()
-    result = await _graph.ainvoke({
+    payload = {
         "query": request.query,
         "semantic_search": semantic_search,
         "keyword_search": keyword_search,
         "web_search": web_search,
         "request": request,
-    })
+    }
+    timed_out = False
+    try:
+        result = await asyncio.wait_for(_graph.ainvoke(payload), timeout=BUDGET_SECONDS)
+    except asyncio.TimeoutError:
+        # 超出时间预算：放弃补救，立刻用本地结果返回，不让请求挂着
+        timed_out = True
+        result = await _fast_local_only(payload)
     elapsed = int((time.perf_counter() - started) * 1000)
     local = result.get("local") or []
     web = result.get("web") or []
@@ -577,6 +609,11 @@ async def route_search(request, semantic_search, keyword_search, web_search) -> 
         # 两路都空且不是"不用检索"，视为检索不可用，交给上层报 503
         raise RuntimeError("Knowledge retrieval unavailable")
 
+    trace = [*(result.get("trace") or [])]
+    if timed_out:
+        trace.append(f"超过 {BUDGET_SECONDS:.0f} 秒预算，已降级为本地快速结果")
+    trace.append(f"总耗时 {elapsed}ms")
+
     return {
         "results": local,
         "query": request.query,
@@ -588,5 +625,5 @@ async def route_search(request, semantic_search, keyword_search, web_search) -> 
         "sufficiency": int(result.get("sufficiency") or 0),
         "route_reason": result.get("reason") or "",
         "forbidden_web": bool(result.get("forbidden_web")),
-        "trace": [*(result.get("trace") or []), f"总耗时 {elapsed}ms"],
+        "trace": trace,
     }
