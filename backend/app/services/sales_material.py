@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl
 from app.services.preparation import PreparationProfile, LABELS, lookup_overview
 from app.services.search import search_via_mcp, SearchUnavailable
-from app.services.research_digest import identify_roles, make_plans, summarize, entity_matches
+from app.services.research_digest import identify_roles, make_plans, summarize, entity_matches, entity_aliases
 
 class MaterialSource(BaseModel):
     title: str = Field(max_length=300)
@@ -48,7 +48,7 @@ def search_key(organization, product, needs, target):
     return '\n'.join(x.strip() for x in (organization, product, needs, target))
 
 
-PRICE_PATTERN = re.compile(r'(?:¥|￥)\s*\d+(?:\.\d+)?(?:\s*元)?|\d+(?:\.\d+)?\s*(?:万元|元/课时|元/小时|元/年|元/学期|元/期|元/月|元|万)')
+PRICE_PATTERN = re.compile(r'(?:¥|￥)\s*\d+(?:\.\d+)?(?:\s*元)?|\d+(?:\.\d+)?\s*(?:万元|元\s*/\s*(?:课时|小时|年|学期|期|月)|元|万)')
 
 
 def extract_price_evidence(sources, topic, limit=4):
@@ -74,6 +74,55 @@ def extract_price_evidence(sources, topic, limit=4):
             if len(evidence) >= limit:
                 return evidence
     return evidence
+
+
+def _price_insights(entries, market_reference, price_aspect):
+    insights = []
+    for entry in entries:
+        evidence = entry.get('evidence') or []
+        brand = entry.get('brand') or '未填写品牌'
+        slot = entry.get('slot') or ''
+        prices = list(dict.fromkeys(item.get('price') for item in evidence if item.get('price')))
+        if prices:
+            summary = f"{slot}｜{brand}：检索到明确价格 {'、'.join(prices[:6])}；比较方面为{price_aspect}。"
+        else:
+            summary = f"{slot}｜{brand}：暂未检索到明确金额，建议查看品牌官网、公众号或重新检索；不会自动补造。"
+        insights.append({
+            'title': f"{slot}品牌价格｜{brand}"[:60],
+            'summary': summary[:220],
+            'caveat': '价格来自公开检索摘要，具体班型、校区和有效期请核对来源原文。',
+            'sources': [
+                {'title': item.get('title', '价格来源'), 'summary': item.get('snippet', ''),
+                 'url': item.get('url', ''), 'date': item.get('date', '')}
+                for item in evidence if item.get('url')
+            ],
+        })
+    if market_reference:
+        prices = list(dict.fromkeys(item.get('price') for item in market_reference if item.get('price')))
+        insights.append({
+            'title': '行业市场参考价',
+            'summary': f"检索到公开市场参考金额：{'、'.join(prices[:6])}；不代表 A/B 官方报价，比较方面为{price_aspect}。",
+            'caveat': '市场参考价可能包含不同班型或地区，不能直接当作某品牌官方价格。',
+            'sources': [
+                {'title': item.get('title', '市场参考来源'), 'summary': item.get('snippet', ''),
+                 'url': item.get('url', ''), 'date': item.get('date', '')}
+                for item in market_reference if item.get('url')
+            ],
+        })
+    return insights[:5]
+
+
+def _school_insights(sources):
+    return [
+        {
+            'title': str(source.get('title', '学校公开资料'))[:60],
+            'summary': str(source.get('summary', '暂无可核验摘要'))[:220],
+            'caveat': '来自公开检索摘要；学校官网、公众号和最新招生安排请以原文为准。',
+            'sources': [source],
+        }
+        for source in sources
+        if source.get('topic') == '机构背景'
+    ][:5]
 
 def entities(organization):
     return list(dict.fromkeys(x.strip() for x in re.split(r'[、,，;；\n]+', organization) if x.strip()))[:3]
@@ -109,11 +158,22 @@ async def research(organization='', product='', needs='', target='', training_mo
             ('B品牌价格资料', price_brand_b),
             ('C品牌价格资料', price_brand_c),
         )
+        if organization:
+            for alias in entity_aliases(organization)[:3]:
+                price_plans.append(('机构背景', f'"{alias}" 官网 学校简介 办学 高考 教学', organization, []))
+            price_plans.append(('机构背景', f'{organization} 公众号 学校新闻 校园 动态', organization, []))
         for label, brand in brands:
             if brand:
-                price_plans.append((label, f'"{brand}" "{product[:100]}" {price_aspect[:100]} 官方 价格 费用 课时 总价 公众号', brand, []))
+                price_plans.append((label, f'"{brand}" "{product[:100]}" {price_aspect[:100]} 官网 价格 收费', brand, []))
+                price_plans.append((label, f'{brand} {product[:100]} {price_aspect[:100]} 公众号 收费标准 课时费', brand, []))
+                subject = next((item for item in ('数学', '英语', '语文', '物理', '化学', '生物') if item in product), '')
+                if subject:
+                    price_plans.append((label, f'{brand} 高考{subject} 一对一 收费 课时费 价格', brand, []))
         if product:
             price_plans.append(('市场参考价', f'"{product[:100]}" {price_aspect[:100]} 市场 价格 区间 平台 公众号', product, []))
+            price_plans.append(('市场参考价', f'{product[:100]} 高考 一对一 收费标准 课时费 参考价', product, []))
+        plan_priority = {'机构背景': -1, 'A品牌价格资料': 0, 'B品牌价格资料': 1, '市场参考价': 2, 'C品牌价格资料': 3}
+        price_plans.sort(key=lambda plan: plan_priority.get(plan[0], 9))
         plans = price_plans
     else:
         roles = await identify_roles(organization, product, needs, target)
@@ -163,14 +223,11 @@ async def research(organization='', product='', needs='', target='', training_mo
             sources.append(dict(title=title[:300], summary=summary[:1200], url=url,
                 date=str(row.get('date') or '')[:100], publisher=parts.hostname,
                 topic=plan[0]))
-            if found >= (3 if len(plans) > 3 else 4): break
+            if found >= (1 if training_mode == 'price_objection' else (3 if len(plans) > 3 else 4)): break
         if not found:
             gaps.append(plan[0] + ('：' + rows if isinstance(rows, str) else '：暂无同时匹配关键词的公开资料。'))
     if any(s in product for s in ('数学','英语','语文','物理','化学','生物')):
         gaps.append('课程难度需核对课程或试题原文；不能根据学校名气或检索摘要推断。')
-    insights = [] if training_mode == 'price_objection' else await summarize(roles, sources[:12])
-    if sources and not insights:
-        gaps.append('已检索到资料，但暂未完成可靠概括，请重试；未将零散摘要充作整理结果。')
     price_comparison = {}
     if training_mode == 'price_objection':
         entries = []
@@ -181,12 +238,22 @@ async def research(organization='', product='', needs='', target='', training_mo
         ):
             if brand:
                 entries.append({'slot': slot, 'brand': brand, 'evidence': extract_price_evidence(sources, topic)})
+        market_reference = extract_price_evidence(sources, '市场参考价')
         price_comparison = {
             'aspect': price_aspect,
             'entries': entries,
-            'market_reference': extract_price_evidence(sources, '市场参考价'),
-            'notice': '只收录检索摘要中明确出现的金额并保留来源；单位不一致时不自动计算差价。未出现的品牌价格不会由模型补造。',
+            'market_reference': market_reference,
+            'organized': [item['summary'] for item in _price_insights(entries, market_reference, price_aspect)],
+            'notice': '已按 A/B 品牌分别整理明确出现的金额；单位不一致时不自动计算差价，未出现的品牌价格不会由模型补造。',
         }
+        school_sources = [source for source in sources if source.get('topic') == '机构背景']
+        insights = _school_insights(school_sources)
+        if not school_sources:
+            gaps.append('学校背景：暂未检索到可核验的公开资料，请检查学校全称或重新检索。')
+    else:
+        insights = await summarize(roles, sources[:12])
+    if sources and not insights:
+        gaps.append('已检索到资料，但暂未完成可靠概括，请重试；未将零散摘要充作整理结果。')
     return dict(organization=roles.get('customer') or organization, overview=overview,
         roles=roles, insights=insights, digest_version=1, sources=sources[:12], gaps=list(dict.fromkeys(gaps))[:10],
         basic_background=('公开资料尚未提供可核验的机构背景时，当前已知情景信息为：' +
