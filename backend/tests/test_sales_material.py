@@ -77,11 +77,70 @@ class MaterialTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('海底捞国际控股有限公司', text)
         self.assertIn('不代表已核实', text)
 
+    def test_price_objection_pdf_adds_price_preparation_without_inventing_discounts(self):
+        body = MaterialRequest(training_mode='price_objection', profile={
+            'product':'数学一对一课程','target':'高三家长','goal':'确认价格顾虑',
+            'price_brand_a':'学而思','price_brand_b':'新东方',
+            'price_comparison_aspect':'单课时价格',
+            'price_concern':'客户认为学而思单课时价格比新东方贵，担心多出的费用不值得。'}, background={
+            'digest_version':1, 'organization':'','basic_background':'用户填写的课程与对象信息。',
+            'price_comparison':{'aspect':'单课时价格','entries':[
+                {'slot':'A','brand':'学而思','evidence':[{'price':'600元','snippet':'学而思单课时约600元','title':'A课程页','url':'https://example.com/a'}]},
+                {'slot':'B','brand':'新东方','evidence':[{'price':'450元','snippet':'新东方单课时约450元','title':'B课程页','url':'https://example.com/b'}]},
+            ],'market_reference':[],'notice':'只使用明确出现的金额。'}})
+        reader = PdfReader(io.BytesIO(render_material(body)))
+        text = ''.join(page.extract_text() for page in reader.pages)
+        self.assertIn('价格异议准备', text)
+        self.assertIn('学而思', text)
+        self.assertIn('新东方', text)
+        self.assertIn('单课时价格', text)
+        self.assertIn('600元', text)
+        self.assertIn('450元', text)
+        self.assertIn('不会自动推荐降价', text)
+        self.assertIn('待核实', text)
+
     async def test_outage_has_no_invented_results(self):
         with patch('app.services.sales_material.search_via_mcp', new=AsyncMock(side_effect=RuntimeError())):
             result = await research('', '适老手机', '', '老人')
         self.assertEqual(result['sources'], [])
         self.assertTrue(result['gaps'])
+
+    async def test_price_objection_research_adds_public_price_and_value_query(self):
+        with patch('app.services.sales_material.identify_roles', new=AsyncMock(return_value={'seller':'示例机构','customer':''})) as identify, \
+             patch('app.services.sales_material.make_plans', return_value=[]), \
+             patch('app.services.sales_material.search_via_mcp', new=AsyncMock(return_value=[])) as search, \
+             patch('app.services.sales_material.summarize', new=AsyncMock(return_value=[])) as summarize:
+            await research('石家庄市第二中学', '数学一对一课程', '', '高三家长', 'price_objection',
+                           '学而思', '新东方', '高途', '单课时价格')
+        queries = '\n'.join(call.args[0] for call in search.await_args_list)
+        self.assertIn('学而思', queries)
+        self.assertIn('新东方', queries)
+        self.assertIn('高途', queries)
+        self.assertIn('单课时价格', queries)
+        self.assertIn('市场 价格 区间', queries)
+        self.assertIn('官网', queries)
+        self.assertIn('公众号', queries)
+        self.assertIn('石家庄', queries)
+        identify.assert_not_awaited()
+        summarize.assert_not_awaited()
+
+    def test_school_aliases_cover_numbered_school_short_name(self):
+        from app.services.research_digest import entity_aliases
+        aliases = entity_aliases('石家庄市第二中学')
+        self.assertIn('石家庄市第二中学', aliases)
+        self.assertIn('石家庄二中', aliases)
+
+    def test_price_evidence_keeps_explicit_amount_and_source_without_guessing(self):
+        from app.services.sales_material import extract_price_evidence
+        sources = [
+            {'topic':'A品牌价格资料','summary':'学而思高三数学一对一单课时价格约600元，具体以校区为准。','title':'A课程页','url':'https://example.com/a','date':'2026-01-01'},
+            {'topic':'B品牌价格资料','summary':'新东方同类课程单课时约450元。','title':'B课程页','url':'https://example.com/b','date':'2026-01-02'},
+        ]
+        evidence = extract_price_evidence(sources, 'A品牌价格资料')
+        self.assertEqual(evidence[0]['price'], '600元')
+        self.assertIn('学而思', evidence[0]['snippet'])
+        self.assertEqual(evidence[0]['url'], 'https://example.com/a')
+        self.assertEqual(extract_price_evidence(sources, 'C品牌价格资料'), [])
 
     def test_pdf_preserves_chinese_sources_and_escapes_markup(self):
         body = MaterialRequest(profile={'product':'数学课','target':'高二家长','goal':'试听'}, background={

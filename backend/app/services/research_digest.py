@@ -86,6 +86,10 @@ def entity_aliases(name):
     shortened = re.sub(r'(有限责任公司|股份有限公司|集团有限公司|有限公司|股份公司|集团公司|集团)$', '', name).strip()
     if len(shortened) >= 2:
         aliases.append(shortened)
+    school_match = re.match(r'^(.+?)(?:市|省)?第?([一二三四五六七八九十百]+)(中学|小学|大学)$', name)
+    if school_match:
+        city, number, kind = school_match.groups()
+        aliases.extend([f'{city}{number}{kind}', f'{city}{number}中' if kind == '中学' else f'{city}{number}{kind}'])
     if name.startswith('中国') and len(name) > 4:
         aliases.append(name[2:])
     aliases.extend({

@@ -22,6 +22,17 @@ def opening(persona=None):
     product = (persona or {}).get('product', '')
     if (persona or {}).get('training_mode') == 'rejection':
         return f'关于{str(product)[:60] or "这项服务"}，我暂时不打算考虑，先不用介绍了。'
+    if (persona or {}).get('training_mode') == 'price_objection':
+        concern = str((persona or {}).get('price_concern') or '').strip()
+        if concern:
+            concern = re.sub(r'^客户(?:认为|觉得|表示|担心)', '', concern).strip()
+            return concern[:160]
+        brand_a = str((persona or {}).get('price_brand_a') or '').strip()
+        brand_b = str((persona or {}).get('price_brand_b') or '').strip()
+        aspect = str((persona or {}).get('price_comparison_aspect') or '价格').strip()
+        if brand_a and brand_b:
+            return f'{brand_a}在{aspect}上比{brand_b}高，我对多出来的费用有顾虑。'
+        return f'关于{str(product)[:60] or "这项服务"}，价格方面我还是有些顾虑，想先了解它值不值。'
     if product:
         return f'你好，想了解一下{str(product)[:80]}，是否适合我的情况？'
     if audience(persona) == 'professional':
@@ -49,28 +60,48 @@ def dialogue_rules(persona):
 
 
 def training_rules(persona):
-    if (persona or {}).get('training_mode') != 'rejection':
-        return ''
-    return ('【专项训练：拒绝挽回，优先遵循】用户选择了此模块，无须在资料中再次提到拒绝。'
-            '首轮必须直接明确拒绝购买或继续了解，不用友好询问产品作为开场。'
-            '依据产品、客户身份及已知需求，自主选择一个合理且不与资料冲突的拒绝切入点；不同新对练可变化。'
-            '拒绝是角色模拟设定，不要宣称有真实调查依据，不编造具体经历、收入或健康情况。'
-            '后续整段围绕拒绝和顾虑推进，保持本轮逻辑一致，不任意更换原因。'
-            '根据销售回应逐步透露顾虑；回应切题可缓和，回避或施压可坚持拒绝，允许礼貌结束。'
-            '不要机械每轮拒绝，不无条件成交，不转回通用产品介绍流程；不扮演教练、不向销售透露评分或建议。\n')
+    mode = (persona or {}).get('training_mode')
+    if mode == 'rejection':
+        return ('【专项训练：拒绝挽回，优先遵循】用户选择了此模块，无须在资料中再次提到拒绝。'
+                '首轮必须直接明确拒绝购买或继续了解，不用友好询问产品作为开场。'
+                '依据产品、客户身份及已知需求，自主选择一个合理且不与资料冲突的拒绝切入点；不同新对练可变化。'
+                '拒绝是角色模拟设定，不要宣称有真实调查依据，不编造具体经历、收入或健康情况。'
+                '后续整段围绕拒绝和顾虑推进，保持本轮逻辑一致，不任意更换原因。'
+                '根据销售回应逐步透露顾虑；回应切题可缓和，回避或施压可坚持拒绝，允许礼貌结束。'
+                '不要机械每轮拒绝，不无条件成交，不转回通用产品介绍流程；不扮演教练、不向销售透露评分或建议。\n')
+    if mode == 'price_objection':
+        return ('【专项训练：价格异议处理，优先遵循】用户选择了此模块。'
+                '正式对练第一句话必须直接从客户已经填写的具体价格顾虑和 A/B 品牌比较开始，不问候、不自我介绍、不问产品，也不重新收集已知信息。'
+                '必须保留 price_concern 中的品牌、比较方面和已知价格；如果提供了 A/B/C，只比较同一产品或班型和同一价格比较方面。'
+                '依据产品、客户身份及已知需求补充自然语气，但不能改变客户原有的比较对象和顾虑重点。'
+                '不得虚构具体报价、竞品价格、折扣、预算数字或客户经历；资料未提供的信息保持未知。'
+                '后续价格顾虑是主线，比较品牌和价格只作为解释差异的背景，不必每一轮都重复比较；客户可以回应价值、预算、付款方式或下一步。'
+                '不要求每轮都提到 A/B，也不要机械重复“太贵”；如果销售回避价格问题，客户应把话题拉回价格顾虑。'
+                '先确认客户在和什么相比、预算差距和价值关注点；销售只重复优惠或施压时继续质疑，能解释价值、方案与条件时才逐步缓和。'
+                '允许保留顾虑或礼貌推迟决定，不无条件成交，不自动降价或承诺优惠，不每轮机械重复太贵，不转回完整首次拜访流程。'
+                '不扮演教练、不向销售透露评分、检索结果或建议。\n')
+    return ''
 
 
 def customer_facts(persona):
     persona = persona or {}
     return {key: str(persona.get(key, ''))[:1000] for key in
-            ('title', 'product', 'customer_needs', 'current_situation', 'scenario_context')}
+            ('title', 'product', 'customer_needs', 'current_situation', 'scenario_context', 'concerns',
+             'price_brand_a', 'price_brand_b', 'price_brand_c', 'price_comparison_aspect', 'price_concern')}
 
 
 async def generate_customer_opening(persona, chat):
     """Generate one contextual greeting; bounded failure uses a product-specific fallback."""
+    mode = (persona or {}).get('training_mode')
+    if mode == 'rejection':
+        opening_instruction = '\n现在刚开始拒绝挽回对练。以客户第一人称直接说一句拒绝，15至60字，符合具体产品和身份。只返回台词。'
+    elif mode == 'price_objection':
+        opening_instruction = ('\n现在正式开始价格异议处理对练。第一句必须直接以客户第一人称说出资料中的具体价格顾虑，并明确比较 A 与 B（如已提供 C 也可保留）在 price_comparison_aspect 上的差异。'
+                               '不要问候、自我介绍、询问产品、解释生成过程或重新收集已知信息；不得新增资料中没有的价格、折扣或竞品事实。15至80字，只返回台词。')
+    else:
+        opening_instruction = '\n现在刚开始对练，请以客户第一人称说一句自然的开场，15至60字。围绕具体产品与已知需求选一个切实相关的问题，不重新询问已知资料。不要解释生成过程，仅返回客户台词。'
     messages = [
-        {'role':'system', 'content': dialogue_rules(persona) +
-         ('\n现在刚开始拒绝挽回对练。以客户第一人称直接说一句拒绝，15至60字，符合具体产品和身份。只返回台词。' if (persona or {}).get('training_mode') == 'rejection' else '\n现在刚开始对练，请以客户第一人称说一句自然的开场，15至60字。围绕具体产品与已知需求选一个切实相关的问题，不重新询问已知资料。不要解释生成过程，仅返回客户台词。')},
+        {'role':'system', 'content': dialogue_rules(persona) + opening_instruction},
         {'role':'user', 'content': '根据已确认的资料开始交流。'},
     ]
     try:

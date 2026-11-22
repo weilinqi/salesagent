@@ -2,22 +2,55 @@ import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
 import type { Background, PreparationProfile } from './CustomerPreparation'
 
-export default function SalesSuggestions({ profile, background, trainingMode = 'full' }: { trainingMode?: 'full' | 'rejection'; profile: PreparationProfile; background?: Background }) {
-  const [items, setItems] = useState<{ title: string; speech: string }[]>([])
+type SuggestionItem = { title: string; speech: string }
+
+function localSuggestions(trainingMode: 'full' | 'rejection' | 'price_objection', profile: PreparationProfile): SuggestionItem[] {
+  if (trainingMode === 'price_objection') {
+    const brandA = profile.price_brand_a || '当前方案'
+    const brandB = profile.price_brand_b || '对比方案'
+    const aspect = profile.price_comparison_aspect || '价格'
+    return [
+      { title: '先问清比较对象', speech: `您说${brandA}比${brandB}贵，主要是${aspect}上的差距，还是课程内容也不一样？` },
+      { title: '确认最在意的结果', speech: '除了价格，您最希望孩子在这门课里得到什么结果？' },
+      { title: '拆开看费用', speech: `如果把${aspect}和包含的服务分开看，您最想先确认哪一部分？` },
+      { title: '了解预算范围', speech: '方便说说您目前大概希望把预算控制在什么范围吗？' },
+      { title: '推进下一步', speech: '如果我把价格和包含内容逐项说明，您愿意再比较一次吗？' },
+    ]
+  }
+  if (trainingMode === 'rejection') {
+    return [
+      { title: '先接住顾虑', speech: '我理解您现在暂时不考虑，您最担心的是哪一方面？' },
+      { title: '确认原因', speech: '是预算、效果还是之前的体验让您有顾虑？' },
+      { title: '不急着成交', speech: '今天不急着做决定，我只想先确认您真正担心的问题。' },
+      { title: '留一个下一步', speech: '如果我补充一份更有针对性的资料，您愿意再看看吗？' },
+    ]
+  }
+  const product = profile.product || '这个方案'
+  return [
+    { title: '了解当前情况', speech: `您现在对${product}最想先了解哪一方面？` },
+    { title: '确认目标', speech: `您希望这次使用${product}后，最重要的变化是什么？` },
+    { title: '了解顾虑', speech: '目前还有哪些因素会让您犹豫？' },
+    { title: '推进下一步', speech: '如果我把关键信息说明清楚，您愿意继续了解吗？' },
+  ]
+}
+
+export default function SalesSuggestions({ profile, background, trainingMode = 'full' }: { trainingMode?: 'full' | 'rejection' | 'price_objection'; profile: PreparationProfile; background?: Background }) {
+  const [items, setItems] = useState<SuggestionItem[]>(() => localSuggestions(trainingMode, profile))
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
-  const history = useRef<{ title: string; speech: string }[]>([])
+  const history = useRef<SuggestionItem[]>([])
   const payload = JSON.stringify({ training_mode: trainingMode, profile, background: background || {} })
   useEffect(() => {
     const controller = new AbortController()
     setBusy(true); setError('')
-    axios.post('/api/v1/practice/preparation/suggestions', { ...JSON.parse(payload), previous: history.current }, { signal: controller.signal, timeout: 25000 })
-      .then(({ data }) => { if (!Array.isArray(data.items) || !data.items.length || data.items.some((item: { title?: unknown; speech?: unknown }) => !item || typeof item.title !== 'string' || typeof item.speech !== 'string')) throw new Error('Invalid suggestions'); if (!controller.signal.aborted) { const next = data.items.slice(0, 5); setItems(next); history.current = [...history.current, ...next].slice(-30) } })
+    axios.post('/api/v1/practice/preparation/suggestions', { ...JSON.parse(payload), previous: history.current }, { signal: controller.signal, timeout: 30000 })
+      .then(({ data }) => { if (!Array.isArray(data.items) || !data.items.length || data.items.some((item: { title?: unknown; speech?: unknown }) => !item || typeof item.title !== 'string' || typeof item.speech !== 'string')) throw new Error('Invalid suggestions'); if (!controller.signal.aborted) { const next = data.items.slice(0, 5); setItems(next); history.current = [...history.current, ...next].slice(-30); if (data.fallback) setError('AI 生成较慢，已先展示本地可用角度。可点击“更多角度”继续生成。') } })
       .catch(err => {
         if (controller.signal.aborted) return
         const status = axios.isAxiosError(err) ? err.response?.status : undefined
-        setError(status === 404 ? '后端尚未加载话术接口，请重启后端后重试。' : status === 401 ? '登录已过期，请重新登录。' : axios.isAxiosError(err) && err.code === 'ECONNABORTED' ? '话术生成超时，请重试。' : '话术建议暂未生成，请重试。')
+        setItems(localSuggestions(trainingMode, profile))
+        setError(status === 404 ? '后端尚未加载话术接口，已先展示本地角度；重启后端后可继续生成。' : status === 401 ? '登录已过期，已先展示本地角度；请重新登录。' : axios.isAxiosError(err) && err.code === 'ECONNABORTED' ? '话术生成超时，已先展示本地可用角度。可点击“更多角度”重试。' : '话术建议暂未生成，已先展示本地可用角度。')
       })
       .finally(() => { if (!controller.signal.aborted) setBusy(false) })
     return () => controller.abort()

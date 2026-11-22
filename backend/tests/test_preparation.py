@@ -131,5 +131,17 @@ class PreparationTests(unittest.IsolatedAsyncioTestCase):
     def test_whitespace_not_ready(self):
         self.assertFalse(PreparationProfile(product=' ', target='客户', goal='成交').ready)
 
+    def test_price_example_recovers_structured_fields_from_explicit_labels(self):
+        from app.services.preparation_extraction import extract_explicit_information
+        message = '客户身份／职务：高三学生家长；客户所属机构／关联人物：石家庄某重点中学；A品牌：学而思；B品牌：新东方；比较的产品或班型：高三数学一对一；价格比较方面：单课时价格；客户的具体价格顾虑：客户认为学而思比新东方贵，担心多出的费用不值得。'
+        result = extract_explicit_information(message)
+        self.assertEqual(result['target'], '高三学生家长')
+        self.assertEqual(result['organization'], '石家庄某重点中学')
+        self.assertEqual(result['price_brand_a'], '学而思')
+        self.assertEqual(result['price_brand_b'], '新东方')
+        self.assertEqual(result['product'], '高三数学一对一')
+        self.assertEqual(result['price_comparison_aspect'], '单课时价格')
+        self.assertIn('学而思比新东方贵', result['price_concern'])
+
 if __name__ == '__main__':
     unittest.main()

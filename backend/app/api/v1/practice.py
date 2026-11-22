@@ -196,7 +196,7 @@ async def create_session(
         )
 
     mode = (session_data.customer_context or {}).get('training_mode', 'full')
-    if mode not in ('full', 'rejection'):
+    if mode not in ('full', 'rejection', 'price_objection'):
         raise HTTPException(status_code=422, detail='未知训练模块')
     prepared = (session_data.customer_context or {}).get("preparation")
     if prepared is not None:
@@ -206,6 +206,8 @@ async def create_session(
             raise HTTPException(status_code=422, detail="对象信息格式不正确")
         if not profile.ready:
             raise HTTPException(status_code=422, detail="请补充产品或服务、对象身份和练习目标")
+        if mode == 'price_objection' and not profile.price_ready:
+            raise HTTPException(status_code=422, detail="价格模式请补充 A/B 品牌、价格比较方面和客户的具体价格顾虑")
         session_data.customer_context["preparation"] = profile.model_dump()
 
     # Create practice session
@@ -386,7 +388,9 @@ async def end_session(session_id: UUID, payload: EndSessionRequest | None = None
     customer_type = personality_map.get(personality, "assertive")
 
     # Generate evaluation
-    evaluation = await handler.evaluate_conversation(context, customer_type)
+    evaluation = await handler.evaluate_conversation(
+        context, customer_type, (session.customer_context or {}).get('training_mode', 'full')
+    )
 
     # Parse evaluation result (simplified - in production would parse structured JSON)
     try:
@@ -632,7 +636,9 @@ async def get_phase_summary(
     customer_type = personality_map.get(personality, "assertive")
 
     # Generate evaluation using knowledge base
-    evaluation = await handler.evaluate_conversation(context, customer_type)
+    evaluation = await handler.evaluate_conversation(
+        context, customer_type, (session.customer_context or {}).get('training_mode', 'full')
+    )
 
     # 解析 LLM JSON（统一用 _parse_evaluation_json 处理 markdown/裸 JSON 各种格式）
     eval_data = _parse_evaluation_json(evaluation)
@@ -757,7 +763,9 @@ async def get_session_summary(
     customer_type = personality_map.get(personality, "assertive")
 
     # Generate evaluation
-    evaluation = await handler.evaluate_conversation(context, customer_type)
+    evaluation = await handler.evaluate_conversation(
+        context, customer_type, (session.customer_context or {}).get('training_mode', 'full')
+    )
 
     # 解析 LLM 返回的 JSON（强约束：handler 端 prompt 已固定 schema）
     parsed = _parse_evaluation_json(evaluation)
@@ -865,7 +873,9 @@ async def export_report_pdf(
 
     from app.services.conversation.handler import get_conversation_handler
     handler = get_conversation_handler()
-    evaluation = await handler.evaluate_conversation(context, customer_type)
+    evaluation = await handler.evaluate_conversation(
+        context, customer_type, (session.customer_context or {}).get('training_mode', 'full')
+    )
 
     # Parse scores from the LLM response.
     import re as _re
@@ -1215,12 +1225,16 @@ from app.services.preparation import (PreparationRequest, BackgroundRequest,
 
 @router.post("/preparation/collect")
 async def prepare_customer(body: PreparationRequest):
-    return await collect_information(body.profile, body.message)
+    return await collect_information(body.profile, body.message, body.training_mode)
 
 @router.post("/preparation/background")
 async def prepare_background(body: BackgroundRequest):
     from app.services.sales_material import research
-    return await research(body.organization.strip(), body.product.strip(), body.needs.strip(), body.target.strip())
+    return await research(
+        body.organization.strip(), body.product.strip(), body.needs.strip(), body.target.strip(),
+        body.training_mode, body.price_brand_a.strip(), body.price_brand_b.strip(),
+        body.price_brand_c.strip(), body.price_comparison_aspect.strip(),
+    )
 
 
 @router.post("/preparation/preview")
@@ -1312,11 +1326,11 @@ from app.services.sales_suggestions import SuggestionRequest
 
 @router.post('/preparation/suggestions')
 async def preparation_suggestions(body: SuggestionRequest):
-    from app.services.sales_suggestions import sales_suggestions
+    from app.services.sales_suggestions import fallback_suggestions, sales_suggestions
     p = body.profile
     if body.background.search_key and body.background.search_key != search_key(p.organization, p.product, p.needs, p.target):
         raise HTTPException(status_code=422, detail='对象信息已更改，请等待资料更新。')
     try:
         return await sales_suggestions(body)
     except Exception:
-        raise HTTPException(status_code=503, detail='话术建议暂未生成，请稍后重试。') from None
+        return {'items': fallback_suggestions(body), 'fallback': True}

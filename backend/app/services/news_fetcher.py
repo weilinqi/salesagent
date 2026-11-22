@@ -15,7 +15,6 @@ News Fetcher Service — 真实新闻源（无需 API key）
       "raw_excerpt": "..."         # 1-2 句原文摘要
     }
 
-未来可扩展：Tavily API（更高质量，需 key）。
 """
 import asyncio
 import re

@@ -34,7 +34,7 @@ export interface CustomerPersona {
 
 // Session type
 interface PracticeSession {
-  training_mode?: 'full' | 'rejection'
+  training_mode?: 'full' | 'rejection' | 'price_objection'
   id: string
   scenario_id: string
   status: 'preparing' | 'active' | 'completed'
@@ -208,6 +208,7 @@ export const usePracticeStore = create<PracticeState>()(
   resumeSession: (detail) => {
     const session: PracticeSession = {
       id: detail.id, scenario_id: detail.scenario_id, status: detail.status,
+      training_mode: detail.customer_context?.training_mode || 'full',
       current_phase: detail.current_phase || 'opening', websocket_url: `/ws/practice/${detail.id}`,
       first_message: null, persona: detail.persona || null,
       customer_context: detail.customer_context, investigation_result: detail.investigation_result,

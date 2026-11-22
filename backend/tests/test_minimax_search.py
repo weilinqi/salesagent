@@ -2,9 +2,12 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 import httpx
-from app.services.search import search_via_mcp, SearchUnavailable
+from app.services.search import _SEARCH_CACHE, search_via_mcp, SearchUnavailable
 
 class MiniMaxSearchTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _SEARCH_CACHE.clear()
+
     async def run_search(self, payload=None, status=200, key='test-key'):
         self.requests = []
         def handler(request):
