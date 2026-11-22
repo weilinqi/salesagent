@@ -323,7 +323,7 @@ async def parallel_context_assembly(
     user_context = session_info.get("user_context")
 
     # 从 session_manager 拉历史（最新 10 轮）
-    from app.websocket.manager import session_manager
+    from app.websocket.manager import manager, session_manager
     ctx = session_manager.get_context(session_id)
     if not ctx:
         # 退化：从 DB 拉
@@ -341,6 +341,31 @@ async def parallel_context_assembly(
     for msg in history:
         if msg.get("role") == "ai":
             msg["role"] = "assistant"
+
+    # 主流程在调用本函数前已把本轮销售消息写入 context，
+    # 而 _build_messages 又会在末尾再追加一次 user_text，
+    # 于是模型会连续看到两条一模一样的销售发言。去掉重复的尾条。
+    if (
+        history
+        and history[-1].get("role") == "user"
+        and str(history[-1].get("content") or "").strip() == (user_text or "").strip()
+    ):
+        history = history[:-1]
+
+    # 对话账本：回放整段对话（不只用最近 10 条），记录家长问过什么、销售答了什么。
+    # 家长的"顾虑/痛点"是人设里的静态文本，每轮都会重新出现在 prompt 里，
+    # 没有账本时模型会反复问同一个问题（如"试听课怎么安排"）。
+    from app.services.conversation import dialogue_ledger
+
+    ledger = dialogue_ledger.build_ledger(ctx)
+    deal_snapshot = (getattr(manager, "_deal_states", None) or {}).get(session_id)
+    ledger_text = (
+        dialogue_ledger.render_ledger(
+            ledger,
+            customer_facts=dialogue_ledger.facts_from_deal_state(deal_snapshot),
+        )
+        + dialogue_ledger.render_turn_reminder(ledger)
+    )
 
     # 并行装配 — 完整保留所有功能
     async def build_msgs():
@@ -377,6 +402,10 @@ async def parallel_context_assembly(
             for r in knowledge_refs[:3]
         )
         msgs[0]["content"] = msgs[0]["content"] + ref_text
+
+    # 对话账本注入：告诉模型哪些话题已经问过并得到答复，避免重复提问
+    if ledger_text and msgs and msgs[0].get("role") == "system":
+        msgs[0]["content"] = msgs[0]["content"] + ledger_text
 
     return {
         "messages": msgs,

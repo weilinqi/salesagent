@@ -318,22 +318,94 @@ async def generate_opening_message(scenario_name: str, scenario_id: str,
 # =============================================================================
 
 async def _safe_update_spin_guidance(session_id: str) -> None:
-    from app.websocket.manager import manager
+    started_at = time.perf_counter()
     try:
         await manager.send_message(session_id, {
             "type": "spin_guidance_status", "data": {"status": "updating"}
         })
         from app.services.conversation.spin_guidance import update_guidance
-        guidance = await update_guidance(session_id)
+        guidance = await asyncio.wait_for(update_guidance(session_id), timeout=45)
+        if not guidance:
+            raise RuntimeError("empty_result")
+        duration_ms = round((time.perf_counter() - started_at) * 1000)
         await manager.send_message(session_id, {
             "type": "spin_guidance_status",
-            "data": {"status": "updated" if guidance else "error"},
+            "data": {"status": "updated", "duration_ms": duration_ms},
         })
-    except Exception:
-        logger.exception("SPIN guidance agent unavailable")
+    except asyncio.TimeoutError as error:
+        logger.warning("SPIN guidance update timed out for session")
+        duration_ms = round((time.perf_counter() - started_at) * 1000)
         await manager.send_message(session_id, {
-            "type": "spin_guidance_status", "data": {"status": "error"}
+            "type": "spin_guidance_status",
+            "data": {"status": "error", "reason": "timeout", "duration_ms": duration_ms},
         })
+    except Exception as error:
+        logger.exception("SPIN guidance agent unavailable")
+        duration_ms = round((time.perf_counter() - started_at) * 1000)
+        await manager.send_message(session_id, {
+            "type": "spin_guidance_status",
+            "data": {
+                "status": "error",
+                "reason": "empty_result" if str(error) == "empty_result" else type(error).__name__,
+                "http_status": getattr(error, "http_status", None),
+                "duration_ms": duration_ms,
+            },
+        })
+
+
+def _schedule_spin_guidance_update(session_id: str) -> asyncio.Task:
+    """Keep only the newest pending analysis for a session to avoid stale/racing updates."""
+    tasks = getattr(manager, "_spin_guidance_tasks", None)
+    if not isinstance(tasks, dict):
+        manager._spin_guidance_tasks = tasks = {}
+
+    previous = tasks.get(session_id)
+    if previous and not previous.done():
+        previous.cancel()
+
+    task = asyncio.create_task(_safe_update_spin_guidance(session_id))
+    tasks[session_id] = task
+
+    def discard_finished(completed: asyncio.Task) -> None:
+        if tasks.get(session_id) is completed:
+            tasks.pop(session_id, None)
+
+    task.add_done_callback(discard_finished)
+    return task
+
+
+async def _safe_update_deal_progress(session_id: str) -> None:
+    """对练推进分析的安全壳：失败只记日志，绝不影响对话本身。"""
+    try:
+        from app.services.conversation.deal_graph import analyze_session
+        await asyncio.wait_for(analyze_session(session_id), timeout=40)
+    except asyncio.CancelledError:
+        raise
+    except asyncio.TimeoutError:
+        logger.warning("deal progress analysis timed out")
+    except Exception:
+        logger.exception("deal progress analysis failed")
+
+
+def _schedule_deal_progress(session_id: str) -> asyncio.Task:
+    """同一会话只保留最新一次推进分析，避免旧的覆盖新的。"""
+    tasks = getattr(manager, "_deal_tasks", None)
+    if not isinstance(tasks, dict):
+        manager._deal_tasks = tasks = {}
+
+    previous = tasks.get(session_id)
+    if previous and not previous.done():
+        previous.cancel()
+
+    task = asyncio.create_task(_safe_update_deal_progress(session_id))
+    tasks[session_id] = task
+
+    def discard_finished(completed: asyncio.Task) -> None:
+        if tasks.get(session_id) is completed:
+            tasks.pop(session_id, None)
+
+    task.add_done_callback(discard_finished)
+    return task
 
 
 async def _transcribe_voice_turn(audio_data: bytes, audio_mime: str) -> str:
@@ -518,12 +590,8 @@ async def process_user_message(websocket, session_id: str, content: str,
                 ai_audio_bytes = None
             save_message_to_db(session_id, "ai", full_response, ai_audio_bytes, "audio/mpeg")
         if user_text and full_response:
-            guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
-            if guidance_tasks is None:
-                manager._spin_guidance_tasks = guidance_tasks = set()
-            guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
-            guidance_tasks.add(guidance_task)
-            guidance_task.add_done_callback(guidance_tasks.discard)
+            _schedule_spin_guidance_update(session_id)
+            _schedule_deal_progress(session_id)
         await _maybe_transition_phase(session_id)
     except Exception as e:
         print(f"[LLM] error: {e}")
@@ -547,11 +615,13 @@ async def _send_mock_response(session_id: str, content: str) -> None:
 
 
 async def _maybe_transition_phase(session_id: str) -> None:
-    """DEPRECATED: 硬性按消息数切阶段已废弃。
+    """阶段推进已改由对练推进模型（deal_graph）负责。
 
-    之前按消息数 (3/6/9/12) 强行切 SPIN 阶段，导致销售员聊到一半被
-    "赶" 到下一阶段，破坏自然对话节奏。已废弃，函数保留为空以
-    兼容旧调用方；前端也不再消费 phase_complete 消息。
+    历史上这里按消息数 (3/6/9/12) 强行切 SPIN 阶段，导致销售员聊到一半
+    被"赶"到下一阶段。现在阶段由 ``services/conversation/deal_state``
+    按"信息是否收集到 + 是否已介绍课程 + 是否已处理异议"判定，
+    门槛满足才推进、每轮最多前进一阶、且允许跳过没发生的异议阶段，
+    因此这里不再做任何硬切。保留函数只为兼容旧调用方。
     """
     return
 
@@ -815,7 +885,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
         return task
 
     if not saved_guidance and session_manager.get_context(session_id):
-        spawn(_safe_update_spin_guidance(session_id))
+        _schedule_spin_guidance_update(session_id)
 
     # ------------------------------------------------------------------
     # Fire-and-forget persona + opening message (slow LLM)
@@ -1064,12 +1134,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
                         "audio/wav" if realtime_turn["audio"] else None,
                     )
                 if round_complete:
-                    guidance_tasks = getattr(manager, "_spin_guidance_tasks", None)
-                    if guidance_tasks is None:
-                        manager._spin_guidance_tasks = guidance_tasks = set()
-                    guidance_task = asyncio.create_task(_safe_update_spin_guidance(session_id))
-                    guidance_tasks.add(guidance_task)
-                    guidance_task.add_done_callback(guidance_tasks.discard)
+                    _schedule_spin_guidance_update(session_id)
                 realtime_turn["text"] = ""
                 realtime_turn["audio"] = b""
                 if session_manager.should_insert_backchannel(session_id):

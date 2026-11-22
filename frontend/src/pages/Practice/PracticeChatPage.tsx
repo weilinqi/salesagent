@@ -19,6 +19,7 @@ import { useAudioStream } from '../../hooks/useAudioStream'
 import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
 import SpinStageHint from '../../components/business/practice/SpinStageHint'
+import DealProgressPanel, { type DealProgress } from '../../components/business/practice/DealProgressPanel'
 import PracticeMaterialsPanel from '../../components/business/practice/PracticeMaterialsPanel'
 import api, { RoleConfig } from '../../api/practice'
 import { loadSessionHistory } from '../../utils/sessionHistory'
@@ -130,6 +131,9 @@ const PracticeChatPage = () => {
   const [isSummaryLoading, setIsSummaryLoading] = useState(false)
   const [spinGuidance, setSpinGuidance] = useState<SpinGuidanceData | null>(null)
   const [spinGuidanceStatus, setSpinGuidanceStatus] = useState<'updating' | 'updated' | 'error' | null>(null)
+  const [spinGuidanceError, setSpinGuidanceError] = useState<string | null>(null)
+  const [spinGuidanceDurationMs, setSpinGuidanceDurationMs] = useState<number | null>(null)
+  const [dealProgress, setDealProgress] = useState<DealProgress | null>(null)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -181,12 +185,18 @@ const PracticeChatPage = () => {
     setMessages_([])
     setSpinGuidance(null)
     setSpinGuidanceStatus(null)
+    setSpinGuidanceError(null)
+    setSpinGuidanceDurationMs(null)
+    setDealProgress(null)
     currentAIMessageIdRef.current = null
     void loadSessionHistory(targetSessionId, controller.signal).then(({ session, messages }) => {
       if (controller.signal.aborted) return
       resumeSession(session)
       setMessages_(messages)
       setLoadedSessionId(session.id)
+      void api.getDealState(session.id).then((progress) => {
+        if (!controller.signal.aborted) setDealProgress(progress)
+      }).catch(() => { /* 历史会话可能还没有推进状态，忽略 */ })
     }).catch((error: unknown) => {
       if (controller.signal.aborted) return
       setHistoryError(axios.isAxiosError(error) && typeof error.response?.data?.detail === 'string'
@@ -205,12 +215,30 @@ const PracticeChatPage = () => {
   const handleMessage = useCallback((wsMessage: StreamMessage) => {
     if (wsMessage.type === 'spin_guidance_status') {
       const status = wsMessage.data?.status
-      if (status === 'updating' || status === 'updated' || status === 'error') setSpinGuidanceStatus(status)
+      if (status === 'updating' || status === 'updated' || status === 'error') {
+        setSpinGuidanceStatus(status)
+        if (status === 'updating') setSpinGuidanceDurationMs(null)
+        const duration = wsMessage.data?.duration_ms
+        if ((status === 'updated' || status === 'error') && typeof duration === 'number') {
+          setSpinGuidanceDurationMs(duration)
+        }
+        const reason = wsMessage.data?.reason
+        const httpStatus = wsMessage.data?.http_status
+        setSpinGuidanceError(status === 'error'
+          ? [typeof reason === 'string' ? reason : null,
+            typeof httpStatus === 'number' ? `HTTP ${httpStatus}` : null]
+            .filter(Boolean).join(' · ') || null
+          : null)
+      }
       return
     }
     if (wsMessage.type === 'spin_guidance' && wsMessage.data) {
       setSpinGuidance(wsMessage.data as unknown as SpinGuidanceData)
-      setSpinGuidanceStatus('updated')
+      setSpinGuidanceError(null)
+      return
+    }
+    if (wsMessage.type === 'deal_progress' && wsMessage.data) {
+      setDealProgress(wsMessage.data as unknown as DealProgress)
       return
     }
     // Handle different message types from WebSocket
@@ -607,10 +635,13 @@ const PracticeChatPage = () => {
               updatedAt={spinGuidance?.updated_at}
             />
           </div>
+          <DealProgressPanel progress={dealProgress} />
           <SpinStageHint
             key={currentSession?.id}
             guidance={spinGuidance || (currentSession?.training_mode === 'price_objection' ? INITIAL_PRICE_OBJECTION_GUIDANCE : INITIAL_SPIN_GUIDANCE)}
             updateStatus={spinGuidanceStatus}
+            updateError={spinGuidanceError}
+            updateDurationMs={spinGuidanceDurationMs}
           />
         </div>
       </div>
