@@ -5,6 +5,8 @@ Models package
 from app.models.user import User
 from app.models.profile import UserSkillLevel
 from app.models.knowledge import KnowledgeDocument
+from app.models.customer_table import CustomerTable, CustomerTableRow
+from app.models.guide import UserGuideProgress
 
 from app.models.practice import (
     Scenario,
@@ -21,6 +23,9 @@ __all__ = [
     "User",
     "UserSkillLevel",
     "KnowledgeDocument",
+    "CustomerTable",
+    "CustomerTableRow",
+    "UserGuideProgress",
     "Scenario",
     "PracticeSession",
     "PracticeMessage",

@@ -4,6 +4,8 @@ Search credentials are tried in configured priority order. Provider payloads and
 credentials are never returned in user-facing errors.
 """
 import logging
+import asyncio
+import time
 
 import httpx
 
@@ -15,6 +17,9 @@ from app.services.llm.minimax_fallback import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SEARCH_CACHE: dict[tuple[str, int], tuple[float, list]] = {}
+_SEARCH_CACHE_TTL = 600
 
 
 class SearchUnavailable(RuntimeError):
@@ -38,9 +43,30 @@ async def search_via_mcp(query: str, num_results: int = 5) -> list:
     ) if key))
     if not keys:
         raise SearchUnavailable("尚未配置 MiniMax 搜索密钥。")
+    cache_key = (query.strip(), num_results)
+    cached = _SEARCH_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < _SEARCH_CACHE_TTL:
+        return list(cached[1])
+    rows = await _search_minimax_keys(query, num_results, keys)
+    if rows:
+        _SEARCH_CACHE[cache_key] = (time.monotonic(), list(rows))
+        return rows
+    return []
+
+
+async def _search_minimax_keys(query: str, num_results: int, keys: list[str]) -> list:
+    deadline = asyncio.get_running_loop().time() + 12
     for index, key in enumerate(keys):
         try:
-            return await _search_once(query, num_results, key)
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise SearchUnavailable("MiniMax 搜索超时，可稍后重试或直接进入对练。")
+            rows = await asyncio.wait_for(_search_once(query, num_results, key), timeout=min(6.0, remaining))
+            return rows
+        except asyncio.TimeoutError:
+            exc = SearchUnavailable("MiniMax 搜索超时，可稍后重试或直接进入对练。")
+            if index == len(keys) - 1 or asyncio.get_running_loop().time() >= deadline:
+                raise exc from None
         except SearchUnavailable as exc:
             if not getattr(exc, "retry_key", False):
                 raise
@@ -60,7 +86,7 @@ async def _search_once(query: str, num_results: int, key: str) -> list:
         raise SearchUnavailable("MiniMax 搜索地址必须使用中国站或国际站官方地址。")
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, trust_env=settings.MINIMAX_USE_PROXY) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=4.0), trust_env=settings.MINIMAX_USE_PROXY) as client:
             response = await client.post(
                 host + "/v1/coding_plan/search",
                 headers={"Authorization": f"Bearer {key}", "MM-API-Source": "Minimax-MCP"},

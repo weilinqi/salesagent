@@ -11,12 +11,15 @@ import {
 import { LoginPage, RegisterPage } from './pages/Auth'
 import { ProfilePage, HistoryPage, SettingsPage } from './pages/User'
 import { DashboardPage } from './pages/Dashboard'
+import { CustomerManagementPage } from './pages/Customers'
 import { KnowledgeBasePage } from './pages/Knowledge'
 import { BriefListPage, BriefDetailPage } from './pages/Briefs'
 import SpinPreparationPage from './pages/Spin/SpinPreparationPage'
 import { AuthProvider } from './contexts/AuthContext'
 import ProtectedRoute from './components/common/ProtectedRoute'
 import AppLayout from './components/common/AppLayout'
+import { GuideProvider } from './contexts/GuideContext'
+import GuideCenter from './components/guide/GuideCenter'
 
 /**
  * Wrapper that every protected page goes through.
@@ -35,6 +38,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <GuideProvider>
         <Routes>
           {/* Public routes — no global nav */}
           <Route path="/login" element={<LoginPage />} />
@@ -46,6 +50,7 @@ function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/spin/preparation" element={<SpinPreparationPage />} />
             <Route path="/practice" element={<PracticePage />} />
+            <Route path="/customers" element={<CustomerManagementPage />} />
             <Route path="/practice/chat" element={<PracticeChatPage />} />
             <Route path="/practice/review" element={<PracticeReviewPage />} />
             <Route path="/practice/report/:session_id" element={<ReportPage />} />
@@ -111,6 +116,8 @@ function App() {
           {/* Default redirect */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        <GuideCenter />
+        </GuideProvider>
       </BrowserRouter>
     </AuthProvider>
   )

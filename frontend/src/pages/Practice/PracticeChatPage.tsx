@@ -83,6 +83,26 @@ const INITIAL_SPIN_GUIDANCE: SpinGuidanceData = {
   isInitial: true,
 }
 
+const INITIAL_PRICE_OBJECTION_GUIDANCE: SpinGuidanceData = {
+  phase: 'Situation',
+  focus: '先确认客户对价格的具体顾虑和真实差距',
+  parent_facts: [],
+  unknowns: [
+    '客户觉得哪一部分价格高',
+    '预算差距和可接受范围',
+    '客户拿什么方案作比较',
+    '客户最看重的价值或结果',
+    '决策人和下一步条件',
+  ],
+  next_step: '先问清客户觉得哪部分贵、是否超出预算，不要立刻降价。',
+  reminder: '不得编造报价、折扣或竞品价格；先确认顾虑再谈方案和价值。',
+  script: '您觉得主要贵在哪一部分，是超出预算，还是和别的课程比觉得不值？',
+  references: [],
+  not_found: false,
+  searched: false,
+  isInitial: true,
+}
+
 async function blobToBase64(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   let binary = ''
@@ -554,7 +574,7 @@ const PracticeChatPage = () => {
         <div className="flex items-center gap-2 text-sm text-gray-600">
           <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-50 text-green-700 rounded">
             <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-            {currentSession?.training_mode === 'rejection' ? '拒绝挽回' : '完整销售对练'}
+            {currentSession?.training_mode === 'rejection' ? '拒绝挽回' : currentSession?.training_mode === 'price_objection' ? '价格异议处理' : '完整销售对练'}
           </span>
           {currentSession?.persona?.name && (
             <span className="text-gray-500">
@@ -603,7 +623,7 @@ const PracticeChatPage = () => {
         {/* OR-4: Real-time SPIN Stage Hint Sidebar */}
         <div className="w-80 border-l border-gray-200 bg-gray-50 overflow-y-auto p-3">
           <div className="mb-3 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium text-gray-500">实时SPIN指导</p>
+            <p className="text-xs font-medium text-gray-500">{currentSession?.training_mode === 'price_objection' ? '实时价格异议指导' : '实时SPIN指导'}</p>
             <PracticeMaterialsPanel
               sessionId={currentSession?.id}
               profile={currentSession?.customer_context?.preparation}
@@ -618,7 +638,7 @@ const PracticeChatPage = () => {
           <DealProgressPanel progress={dealProgress} />
           <SpinStageHint
             key={currentSession?.id}
-            guidance={spinGuidance || INITIAL_SPIN_GUIDANCE}
+            guidance={spinGuidance || (currentSession?.training_mode === 'price_objection' ? INITIAL_PRICE_OBJECTION_GUIDANCE : INITIAL_SPIN_GUIDANCE)}
             updateStatus={spinGuidanceStatus}
             updateError={spinGuidanceError}
             updateDurationMs={spinGuidanceDurationMs}

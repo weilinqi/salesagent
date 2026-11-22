@@ -1,9 +1,20 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 from app.services.sales_material import MaterialRequest
-from app.services.sales_suggestions import sales_suggestions
+from app.services.sales_suggestions import fallback_suggestions, sales_suggestions
 
 class SuggestionsTests(unittest.IsolatedAsyncioTestCase):
+    def test_price_fallback_keeps_specific_brand_and_price_context(self):
+        from app.services.sales_suggestions import SuggestionRequest
+        body = SuggestionRequest(training_mode='price_objection', profile={
+            'product':'高三数学一对一', 'price_brand_a':'学而思', 'price_brand_b':'新东方',
+            'price_comparison_aspect':'单课时价格', 'price_concern':'客户认为学而思比新东方贵，担心多出的费用不值得。',
+        })
+        items = fallback_suggestions(body)
+        self.assertGreaterEqual(len(items), 4)
+        self.assertTrue(any('学而思' in item['speech'] and '新东方' in item['speech'] for item in items))
+        self.assertFalse(any('口径' in item['speech'] for item in items))
+
     async def test_context_limit_and_deduplication(self):
         body = MaterialRequest(profile={'product':'适老手机','target':'老人','needs':'字体清楚'}, background={})
         entries=[{'title':str(i),'speech':f'参考话术{i}'} for i in range(7)]
