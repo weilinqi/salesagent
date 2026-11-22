@@ -115,6 +115,8 @@ const PracticeChatPage = () => {
   const [spinGuidanceDurationMs, setSpinGuidanceDurationMs] = useState<number | null>(null)
   const [dealProgress, setDealProgress] = useState<DealProgress | null>(null)
   const [isEndingDeal, setIsEndingDeal] = useState(false)
+  const [isForceEnding, setIsForceEnding] = useState(false)
+  const [forceEnded, setForceEnded] = useState(false)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -484,6 +486,29 @@ const PracticeChatPage = () => {
     }
   }, [currentSession])
 
+  /**
+   * 强制结束：不看进度、不看是否谈成，直接结束本场对练，
+   * 结束后立刻打开「阶段总结」界面。
+   */
+  const handleForceEnd = useCallback(async () => {
+    const sessionId = currentSession?.id
+    if (!sessionId || isForceEnding || forceEnded) return
+    if (!window.confirm('强制结束会立刻结束本场对练并生成阶段总结，确定要结束吗？')) return
+
+    setIsForceEnding(true)
+    try {
+      await api.endSession(sessionId)
+      setForceEnded(true)
+      // 结束后自动跳到阶段总结界面
+      await handleGetPhaseSummary()
+    } catch (error) {
+      console.error('强制结束失败', error)
+      window.alert('强制结束失败，请稍后重试')
+    } finally {
+      setIsForceEnding(false)
+    }
+  }, [currentSession?.id, isForceEnding, forceEnded, handleGetPhaseSummary])
+
   if (historyError) return (
     <div role="alert" className="p-8 text-center space-y-4">
       <p>{historyError}</p>
@@ -602,7 +627,7 @@ const PracticeChatPage = () => {
             onAudioChunk={sendAudioChunk}
             onStopPlayback={handleStopPlayback}
             onPlayAudio={playMessageAudio}
-            isDisabled={currentSession?.status === 'completed'}
+            isDisabled={currentSession?.status === 'completed' || forceEnded}
             isSending={isSending}
             isConnected={isConnected}
             connectionError={connectionError}
@@ -651,13 +676,23 @@ const PracticeChatPage = () => {
             {currentSession?.current_phase === 'closing' && '复盘总结'}
           </span>
         </div>
-        <button
-          onClick={handleGetPhaseSummary}
-          disabled={currentSession?.status === 'completed'}
-          className="px-4 py-2 bg-secondary text-white rounded-lg hover:bg-secondary/90 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-all"
-        >
-          生成阶段总结
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleForceEnd}
+            disabled={currentSession?.status === 'completed' || forceEnded || isForceEnding}
+            title="不管对话进行到哪一步，直接结束并生成阶段总结"
+            className="px-4 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-all"
+          >
+            {isForceEnding ? '结束中…' : '强制结束'}
+          </button>
+          <button
+            onClick={handleGetPhaseSummary}
+            disabled={currentSession?.status === 'completed'}
+            className="px-4 py-2 bg-secondary text-white rounded-lg hover:bg-secondary/90 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-all"
+          >
+            生成阶段总结
+          </button>
+        </div>
       </div>
 
       {/* Phase Summary Modal */}
