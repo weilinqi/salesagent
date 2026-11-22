@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from html import escape
 from urllib.parse import urlsplit
+from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl
 from app.services.preparation import PreparationProfile, LABELS, lookup_overview
 from app.services.search import search_via_mcp, SearchUnavailable
@@ -36,13 +37,43 @@ class MaterialBackground(BaseModel):
     gaps: list[str] = Field(default_factory=list, max_length=10)
     search_key: str = Field(default='', max_length=5000)
     basic_background: str = Field(default='', max_length=1200)
+    price_comparison: dict = Field(default_factory=dict)
 
 class MaterialRequest(BaseModel):
     profile: PreparationProfile
     background: MaterialBackground
+    training_mode: Literal['full', 'rejection', 'price_objection'] = 'full'
 
 def search_key(organization, product, needs, target):
     return '\n'.join(x.strip() for x in (organization, product, needs, target))
+
+
+PRICE_PATTERN = re.compile(r'(?:¥|￥)\s*\d+(?:\.\d+)?(?:\s*元)?|\d+(?:\.\d+)?\s*(?:万元|元/课时|元/小时|元/年|元/学期|元/期|元/月|元|万)')
+
+
+def extract_price_evidence(sources, topic, limit=4):
+    evidence, seen = [], set()
+    for source in sources:
+        if not str(source.get('topic', '')).startswith(topic):
+            continue
+        summary = str(source.get('summary', ''))
+        for match in PRICE_PATTERN.finditer(summary):
+            price = match.group().strip()
+            key = (price, source.get('url', ''))
+            if key in seen:
+                continue
+            seen.add(key)
+            start, end = max(0, match.start() - 45), min(len(summary), match.end() + 55)
+            evidence.append({
+                'price': price[:80],
+                'snippet': summary[start:end].strip()[:180],
+                'title': str(source.get('title', '价格来源'))[:200],
+                'url': str(source.get('url', '')),
+                'date': str(source.get('date', ''))[:100],
+            })
+            if len(evidence) >= limit:
+                return evidence
+    return evidence
 
 def entities(organization):
     return list(dict.fromkeys(x.strip() for x in re.split(r'[、,，;；\n]+', organization) if x.strip()))[:3]
@@ -61,9 +92,32 @@ def queries(organization, product, needs, target):
         plans.append(('产品资料', f'"{product}" {needs[:120]} 产品介绍 适用范围', product, []))
     return plans
 
-async def research(organization='', product='', needs='', target=''):
-    roles = await identify_roles(organization, product, needs, target)
-    plans = make_plans(roles)
+async def research(organization='', product='', needs='', target='', training_mode='full',
+                   price_brand_a='', price_brand_b='', price_brand_c='', price_comparison_aspect=''):
+    price_aspect = price_comparison_aspect or '价格'
+    if training_mode == 'price_objection':
+        roles = {
+            'seller': price_brand_a,
+            'customer': organization,
+            'product': product,
+            'need': needs,
+            'target': target,
+        }
+        price_plans = []
+        brands = (
+            ('A品牌价格资料', price_brand_a),
+            ('B品牌价格资料', price_brand_b),
+            ('C品牌价格资料', price_brand_c),
+        )
+        for label, brand in brands:
+            if brand:
+                price_plans.append((label, f'"{brand}" "{product[:100]}" {price_aspect[:100]} 官方 价格 费用 课时 总价 公众号', brand, []))
+        if product:
+            price_plans.append(('市场参考价', f'"{product[:100]}" {price_aspect[:100]} 市场 价格 区间 平台 公众号', product, []))
+        plans = price_plans
+    else:
+        roles = await identify_roles(organization, product, needs, target)
+        plans = make_plans(roles)
     async def search(plan):
         try:
             return await asyncio.wait_for(search_via_mcp(plan[1], 10), 12)
@@ -76,7 +130,7 @@ async def research(organization='', product='', needs='', target=''):
     outcomes = await asyncio.gather(*(search(p) for p in plans))
     overview = None
     customer = roles.get('customer')
-    if customer:
+    if customer and training_mode != 'price_objection':
         background_rows = [row for plan, rows in zip(plans, outcomes)
                            if plan[0] == '机构背景' and isinstance(rows, list)
                            for row in rows]
@@ -114,9 +168,25 @@ async def research(organization='', product='', needs='', target=''):
             gaps.append(plan[0] + ('：' + rows if isinstance(rows, str) else '：暂无同时匹配关键词的公开资料。'))
     if any(s in product for s in ('数学','英语','语文','物理','化学','生物')):
         gaps.append('课程难度需核对课程或试题原文；不能根据学校名气或检索摘要推断。')
-    insights = await summarize(roles, sources[:12])
+    insights = [] if training_mode == 'price_objection' else await summarize(roles, sources[:12])
     if sources and not insights:
         gaps.append('已检索到资料，但暂未完成可靠概括，请重试；未将零散摘要充作整理结果。')
+    price_comparison = {}
+    if training_mode == 'price_objection':
+        entries = []
+        for slot, brand, topic in (
+            ('A', price_brand_a, 'A品牌价格资料'),
+            ('B', price_brand_b, 'B品牌价格资料'),
+            ('C', price_brand_c, 'C品牌价格资料'),
+        ):
+            if brand:
+                entries.append({'slot': slot, 'brand': brand, 'evidence': extract_price_evidence(sources, topic)})
+        price_comparison = {
+            'aspect': price_aspect,
+            'entries': entries,
+            'market_reference': extract_price_evidence(sources, '市场参考价'),
+            'notice': '只收录检索摘要中明确出现的金额并保留来源；单位不一致时不自动计算差价。未出现的品牌价格不会由模型补造。',
+        }
     return dict(organization=roles.get('customer') or organization, overview=overview,
         roles=roles, insights=insights, digest_version=1, sources=sources[:12], gaps=list(dict.fromkeys(gaps))[:10],
         basic_background=('公开资料尚未提供可核验的机构背景时，当前已知情景信息为：' +
@@ -125,6 +195,7 @@ async def research(organization='', product='', needs='', target=''):
                 if value and value.strip()) +
             '。以上仅为使用者填写内容，不代表已核实的机构事实。'),
         checked_at=datetime.now(timezone.utc).isoformat(), search_key=search_key(organization,product,needs,target),
+        price_comparison=price_comparison,
         notice='围绕客户机构、产品和需求整合，最多5个方面；依据公开检索摘要，未逐篇核实原文。各条保留出处，适用范围及最新安排请以原文为准。')
 
 def render_material(body: MaterialRequest):
@@ -143,9 +214,58 @@ def render_material(body: MaterialRequest):
     def para(text): return Paragraph(escape(str(text)).replace('\n','<br/>'), style)
     story.append(para('查询时间：' + body.background.checked_at))
     story.append(Paragraph('一、用户确认的信息', heading))
-    for key, value in body.profile.model_dump().items():
-        story.append(para(LABELS[key] + '：' + (value or '未填写')))
-    story.append(Paragraph('二、公开检索资料', heading))
+    profile_values = body.profile.model_dump()
+    display_labels = dict(LABELS)
+    display_keys = list(profile_values)
+    if body.training_mode == 'price_objection':
+        display_labels.update({
+            'target': '客户身份／职务',
+            'organization': '客户所属机构／关联人物',
+            'product': '比较的产品或班型',
+        })
+        display_keys = ['target', 'organization', 'industry', 'product', 'goal']
+    for key in display_keys:
+        story.append(para(display_labels[key] + '：' + (profile_values[key] or '未填写')))
+    if body.training_mode == 'price_objection':
+        story.append(Paragraph('二、价格异议准备', heading))
+        story.append(para('A 品牌：' + (body.profile.price_brand_a or '未填写')))
+        story.append(para('B 品牌：' + (body.profile.price_brand_b or '未填写')))
+        if body.profile.price_brand_c:
+            story.append(para('C 品牌：' + body.profile.price_brand_c))
+        story.append(para('价格比较方面：' + (body.profile.price_comparison_aspect or '未填写')))
+        story.append(para('客户的具体价格顾虑：' + (body.profile.price_concern or '未填写')))
+        story.append(para('先分别核对 A、B（以及 C）在同一产品/班型和同一价格比较方面上的公开价格，再比较；无法直接比较时不得强行计算差价。'))
+        comparison = body.background.price_comparison or {}
+        for entry in comparison.get('entries', []) if isinstance(comparison, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            evidence = entry.get('evidence') if isinstance(entry.get('evidence'), list) else []
+            story.append(para(f"{entry.get('slot', '')} 品牌｜{entry.get('brand', '')}"))
+            if not evidence:
+                story.append(para('未在检索摘要中找到明确金额，需手动核对或补充手动参考价。'))
+            for item in evidence[:4]:
+                if not isinstance(item, dict):
+                    continue
+                story.append(para('价格证据：' + str(item.get('price', '')) + '｜' + str(item.get('snippet', ''))))
+                source_url = str(item.get('url', ''))
+                if source_url:
+                    story.append(Paragraph('<link href="' + escape(source_url, quote=True) + '" color="blue">来源：' + escape(str(item.get('title', '价格来源'))) + '</link>', style))
+                else:
+                    story.append(para('来源：' + str(item.get('title', '客户填写')) + '（未外部核验）'))
+        market = comparison.get('market_reference') if isinstance(comparison, dict) else []
+        if isinstance(market, list) and market:
+            story.append(para('行业市场参考（不等于 A/B 官方报价）'))
+            for item in market[:4]:
+                if isinstance(item, dict):
+                    story.append(para(str(item.get('price', '')) + '｜' + str(item.get('snippet', ''))))
+        if isinstance(comparison, dict) and comparison.get('notice'):
+            story.append(para(comparison['notice']))
+        story.append(para('优先使用用户确认信息和下方带来源的公开资料；没有来源的报价、折扣、竞品价格和优惠必须标为待核实。'))
+        story.append(para('可准备的角度：费用构成、总成本、适用方案、可验证案例、付款条件和下一步确认。'))
+        story.append(para('本资料不会自动推荐降价，也不能把公开检索摘要当成客户预算或竞品报价。'))
+        story.append(Paragraph('三、公开检索资料', heading))
+    else:
+        story.append(Paragraph('二、公开检索资料', heading))
 
     if body.background.digest_version:
         if body.background.overview:

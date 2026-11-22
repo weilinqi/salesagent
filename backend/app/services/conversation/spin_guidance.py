@@ -33,6 +33,8 @@ SEARCH_TOOL = [{
 class GuidanceState(TypedDict, total=False):
     transcript: str
     phase: str
+    training_mode: str
+    price_context: dict[str, Any]
     round_number: int
     previous_guidance: dict[str, Any]
     draft: dict[str, Any]
@@ -61,6 +63,16 @@ def _coach_prompt(state: GuidanceState) -> list[dict[str, str]]:
     facts = "\n".join(
         f"- [{item['source']}] {item['text'][:500]}" for item in references[:4]
     ) or "尚无检索资料"
+    training_mode = state.get("training_mode", "full")
+    price_context = state.get("price_context") or {}
+    price_mode_rules = (
+        "当前是价格异议处理专项。已知事实优先记录客户明确说出的价格顾虑、预算限制、比较对象、价值关注和决策条件。"
+        "价格顾虑是主线；比较对象和价格比较方面只在需要解释价格差异时使用，不要求客户每一轮都重复 A/B 比较。"
+        "待了解优先列出尚未确认的价格顾虑原因、预算差距、费用构成、决策人、优惠条件或下一步承诺。"
+        "下一步和话术应先帮助销售确认价格顾虑的真实原因，再讨论价值、方案、总成本或条件；不得直接建议降价，不得编造报价、竞品价格和优惠。"
+        "如果已提供价格比较资料，需要比较时保持同一 A/B/C 品牌和同一价格比较方面，不要把单课时价格与总价混为一谈。"
+        if training_mode == "price_objection" else ""
+    )
     return [
         {"role": "system", "content": (
             "你是上海教培机构销售员工的SPIN实时教练。每完成一轮销售员与家长的来回，都必须根据最新一轮重新评估并更新侧栏。"
@@ -70,10 +82,11 @@ def _coach_prompt(state: GuidanceState) -> list[dict[str, str]]:
             "如果对话明确涉及具体学校、课程、价格、校区、退费/请假规则，或需要引用话术依据，"
             "先调用 search_knowledge 检索；普通寒暄和一般沟通不检索。若与上次资料主题相同，沿用已有资料，不要重复检索；只有主题发生变化或此前资料明显不适用时才再次检索。拿到工具结果后再输出。"
             "只能引用检索结果；无结果时明确写‘知识库未找到相关资料’，禁止补造。"
+            + price_mode_rules +
             "最终只输出JSON：{phase, focus, parent_facts:[...], unknowns:[...], next_step, reminder, script, references:[{source,text}], not_found}。"
             "focus/next_step/reminder/script简短且针对本轮。parent_facts和unknowns必须反映完整近期对话，不得丢弃仍有效的已知事实。references只能来自工具结果或传入的上一轮已核实资料。phase取Situation/Problem/Implication/Need-payoff之一。"
         )},
-        {"role": "user", "content": f"这是第 {state.get('round_number', 0)} 轮完整对话。\n当前阶段：{state.get('phase', 'discovery')}\n上一轮侧栏：{json.dumps(previous_summary, ensure_ascii=False)}\n上次检索主题：{state.get('last_search_query') or '无'}\n最近对话：\n{state['transcript']}\n已核实资料：\n{facts}"},
+        {"role": "user", "content": f"这是第 {state.get('round_number', 0)} 轮完整对话。\n当前训练模式：{training_mode}\n当前阶段：{state.get('phase', 'discovery')}\n价格比较资料：{json.dumps(price_context, ensure_ascii=False) if price_context else '无'}\n上一轮侧栏：{json.dumps(previous_summary, ensure_ascii=False)}\n上次检索主题：{state.get('last_search_query') or '无'}\n最近对话：\n{state['transcript']}\n已核实资料：\n{facts}"},
     ]
 
 
@@ -145,21 +158,22 @@ _builder.add_edge("search", "analyze")
 _graph = _builder.compile()
 
 
-def _normalize(result: dict[str, Any]) -> dict[str, Any]:
+def _normalize(result: dict[str, Any], training_mode: str = "full") -> dict[str, Any]:
     draft = result.get("draft") or {}
     refs = result.get("references") or []
     facts = draft.get("parent_facts") if isinstance(draft.get("parent_facts"), list) else []
     unknowns = draft.get("unknowns") if isinstance(draft.get("unknowns"), list) else []
     clean_refs = [{"source": str(ref.get("source", "知识库资料")), "text": str(ref.get("text", ""))[:600]}
                   for ref in refs if isinstance(ref, dict) and ref.get("text")]
+    price_mode = training_mode == "price_objection"
     return {
         "phase": str(draft.get("phase") or "Situation")[:24],
-        "focus": str(draft.get("focus") or "继续倾听家长需求")[:100],
+        "focus": str(draft.get("focus") or ("确认客户在和什么相比以及真实价格差距" if price_mode else "继续倾听家长需求"))[:100],
         "parent_facts": [str(item)[:100] for item in facts[:6]],
         "unknowns": [str(item)[:100] for item in unknowns[:6]],
-        "next_step": str(draft.get("next_step") or "用开放问题了解家长最关心的目标")[:120],
-        "reminder": str(draft.get("reminder") or "先回应家长顾虑，再追问具体影响")[:120],
-        "script": str(draft.get("script") or "您最希望孩子这学期在哪方面有所进步？")[:160],
+        "next_step": str(draft.get("next_step") or ("先确认客户说贵是比较预算、竞品还是价值不清楚" if price_mode else "用开放问题了解家长最关心的目标"))[:120],
+        "reminder": str(draft.get("reminder") or ("不要直接降价或虚构优惠，先问清和什么相比、怎么收费" if price_mode else "先回应家长顾虑，再追问具体影响"))[:120],
+        "script": str(draft.get("script") or ("您说价格偏高，主要是和预算比，还是和其他方案比？" if price_mode else "您最希望孩子这学期在哪方面有所进步？"))[:160],
         "references": clean_refs,
         "not_found": bool(result.get("search_attempted")) and not clean_refs,
         "searched": bool(result.get("search_attempted")),
@@ -178,23 +192,33 @@ async def update_guidance(session_id: str) -> dict[str, Any] | None:
         previous = getattr(manager, "_spin_guidance", {}).get(session_id, {})
         context = session_manager.get_context(session_id) or []
         recent = context[-20:]
-        transcript = "\n".join(
-            f"{'家长' if row.get('role') == 'ai' else '销售'}：{str(row.get('content') or '')[:420]}"
-            for row in recent if row.get("role") in ("user", "ai", "assistant")
-        )[-6000:]
         round_number = sum(1 for row in context if row.get("role") == "user")
         info = session_manager.get_session_info(session_id) or {}
         phase = info.get("current_phase") or "discovery"
+        training_mode = (info.get("customer_context") or {}).get("training_mode", "full")
+        preparation = (info.get("customer_context") or {}).get("preparation") or {}
+        price_context = {
+            key: preparation.get(key, "")
+            for key in ("price_brand_a", "price_brand_b", "price_brand_c", "price_comparison_aspect", "price_concern")
+            if preparation.get(key)
+        }
+        customer_label = "客户" if training_mode == "price_objection" else "家长"
+        transcript = "\n".join(
+            f"{customer_label if row.get('role') == 'ai' else '销售'}：{str(row.get('content') or '')[:420]}"
+            for row in recent if row.get("role") in ("user", "ai", "assistant")
+        )[-6000:]
         result = await _graph.ainvoke({
                                         "transcript": transcript,
                                         "phase": phase,
+                                        "training_mode": training_mode,
+                                        "price_context": price_context,
                                         "round_number": round_number,
                                         "previous_guidance": previous,
                                         "references": previous.get("references", []),
                                         "last_search_query": previous.get("last_search_query", ""),
                                     },
                                       config={"recursion_limit": 5})
-        guidance = _normalize(result)
+        guidance = _normalize(result, training_mode)
         states = getattr(manager, "_spin_guidance", None)
         if states is None:
             manager._spin_guidance = states = {}

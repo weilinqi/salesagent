@@ -933,7 +933,8 @@ class ConversationHandler:
     async def evaluate_conversation(
         self,
         conversation_history: List[Dict],
-        customer_type: str = "assertive"
+        customer_type: str = "assertive",
+        training_mode: str = "full",
     ) -> str:
         """
         对话结束后，生成SPIN评价报告（FR-9: 引用知识库内容）
@@ -966,7 +967,16 @@ class ConversationHandler:
 
         # FR-9: 构建带知识的评价prompt
         # 注意：JSON 模板里的 { } 必须用 {{ }} 转义，否则 f-string 会把它们当 format spec
+        mode_rules = (
+            '当前是价格异议处理专项。四维评分继续沿用原字段名，但按以下含义评价：'
+            'situation_score 看是否识别客户在和什么相比、预算或竞品；problem_score 看是否找到价格顾虑背后的真实问题；'
+            'implication_score 看是否说明问题不解决的影响；need_payoff_score 看是否让客户自己说出价值并推进可接受的下一步。'
+            '不要因销售没有降价而扣分，也不奖励无依据的折扣、竞品价格或优惠承诺。'
+            if training_mode == 'price_objection' else ''
+        )
         evaluation_prompt = f"""你是销售对练系统的AI教练，负责对销售学员的对话进行SPIN标准评价。
+
+{mode_rules}
 
 【知识库 - SPIN方法论参考】
 {spin_framework}

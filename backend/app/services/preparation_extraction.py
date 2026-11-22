@@ -4,12 +4,17 @@ import re
 
 ALIASES = {
     'industry': ['industry', '推销行业', '行业'],
-    'product': ['product', '产品或服务', '推销产品', '产品'],
-    'target': ['target', '对象身份／职务', '对象身份/职务', '推销对象', '对象'],
-    'organization': ['organization', '关联公司／机构', '公司', '机构', '学校'],
+    'product': ['product', '产品或服务', '比较的产品或班型', '推销产品', '产品'],
+    'target': ['target', '对象身份／职务', '对象身份/职务', '客户身份／职务', '推销对象', '对象'],
+    'organization': ['organization', '关联公司／机构', '客户所属机构／关联人物', '公司', '机构', '学校'],
     'needs': ['needs', '需求与使用场景', '对象需求', '需求'],
     'preferences': ['preferences', '喜好与顾虑', '喜好', '顾虑'],
     'goal': ['goal', '本次练习目标', '练习目标', '目标'],
+    'price_brand_a': ['price_brand_a', 'A·我方品牌／机构', 'A品牌', '我方品牌'],
+    'price_brand_b': ['price_brand_b', 'B·对比品牌／机构', 'B品牌', '对比品牌'],
+    'price_brand_c': ['price_brand_c', 'C·其他对比品牌／机构', 'C品牌', '其他对比品牌'],
+    'price_comparison_aspect': ['price_comparison_aspect', '价格比较方面'],
+    'price_concern': ['price_concern', '客户的具体价格顾虑', '价格顾虑'],
 }
 
 def parse_extraction(raw):
@@ -68,6 +73,21 @@ def extract_explicit_information(message):
         need = re.match(r'^(?:家长|客户|对方)(?:想让|希望|需要|想要)(.+)$', clause)
         if need:
             result.setdefault('needs', need[1].strip())
+        for key, patterns in (
+            ('price_brand_a', (r'^(?:A|我方)\s*(?:品牌|机构)?\s*(?:是|为)\s*(.+)$',)),
+            ('price_brand_b', (r'^(?:B|对比)\s*(?:品牌|机构)?\s*(?:是|为)\s*(.+)$',)),
+            ('price_brand_c', (r'^(?:C|其他对比)\s*(?:品牌|机构)?\s*(?:是|为)\s*(.+)$',)),
+        ):
+            for pattern in patterns:
+                match = re.match(pattern, clause)
+                if match:
+                    result.setdefault(key, match[1].strip())
+        aspect = re.search(r'在(.+?)(?:方面)?(?:有|存在).*?顾虑', clause)
+        if aspect:
+            result.setdefault('price_comparison_aspect', aspect[1].strip())
+        concern = re.search(r'^(?:(?:客户|对方)(?:认为|觉得|担心|表示)|(?:认为|觉得|担心|表示))\s*(.+)$', clause)
+        if concern:
+            result.setdefault('price_concern', concern[1].strip())
     if re.search(r'(数学|英语|语文|物理|化学).*(课|辅导)', result.get('product', '')):
         result.setdefault('industry', '教育培训')
     return {key: value[:1000] for key, value in result.items()}

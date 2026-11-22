@@ -21,7 +21,7 @@ type Step = 'select' | 'configure' | 'ready'
 type PracticeProfileHistoryEntry = {
   id: string
   createdAt: string
-  trainingMode: 'full' | 'rejection'
+  trainingMode: 'full' | 'rejection' | 'price_objection'
   profile: PreparationProfile
 }
 
@@ -38,7 +38,7 @@ function readProfileHistory(userId?: string): PracticeProfileHistoryEntry[] {
     return value.filter((entry): entry is PracticeProfileHistoryEntry =>
       entry && typeof entry === 'object' &&
       typeof entry.id === 'string' && typeof entry.createdAt === 'string' && !Number.isNaN(Date.parse(entry.createdAt)) &&
-      (entry.trainingMode === 'full' || entry.trainingMode === 'rejection') &&
+      (entry.trainingMode === 'full' || entry.trainingMode === 'rejection' || entry.trainingMode === 'price_objection') &&
       entry.profile && typeof entry.profile === 'object' &&
       ['industry', 'product', 'target', 'organization', 'needs', 'preferences', 'goal']
         .every(key => typeof entry.profile[key as keyof PreparationProfile] === 'string')
@@ -48,7 +48,7 @@ function readProfileHistory(userId?: string): PracticeProfileHistoryEntry[] {
   }
 }
 
-function saveProfileHistory(userId: string | undefined, profile: PreparationProfile, trainingMode: 'full' | 'rejection') {
+function saveProfileHistory(userId: string | undefined, profile: PreparationProfile, trainingMode: 'full' | 'rejection' | 'price_objection') {
   const entry: PracticeProfileHistoryEntry = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     createdAt: new Date().toISOString(),
@@ -91,12 +91,12 @@ const PracticePage = () => {
     resetSession
   } = usePracticeStore()
 
-  const [trainingMode, setTrainingMode] = useState<'full' | 'rejection'>('full')
+  const [trainingMode, setTrainingMode] = useState<'full' | 'rejection' | 'price_objection'>('full')
   const [draft, setDraft] = useState<Partial<PreparationProfile>>(initialProfile)
   const [profileHistory, setProfileHistory] = useState<PracticeProfileHistoryEntry[]>([])
   const [showProfileHistory, setShowProfileHistory] = useState(false)
   const [preparationRevision, setPreparationRevision] = useState(0)
-  const moduleTitle = trainingMode === 'rejection' ? '拒绝挽回' : '完整销售对练'
+  const moduleTitle = trainingMode === 'rejection' ? '拒绝挽回' : trainingMode === 'price_objection' ? '价格异议处理' : '完整销售对练'
   const [currentStep, setCurrentStep] = useState<Step>('select')
   const [isStarting, setIsStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
@@ -117,7 +117,7 @@ const PracticePage = () => {
     }
   }, [currentStep, selectedRoleConfig, navigate])
 
-  const chooseModule = (mode: 'full' | 'rejection') => {
+  const chooseModule = (mode: 'full' | 'rejection' | 'price_objection') => {
     const template = scenarios[0]
     if (!template) return
     resetSession()
@@ -145,7 +145,7 @@ const PracticePage = () => {
         const session = usePracticeStore.getState().currentSession
         if (!session) throw new Error('对练会话创建后未能读取会话信息')
         try {
-          await practiceApi.saveSessionPreparationPdf(session.id, profile, background)
+          await practiceApi.saveSessionPreparationPdf(session.id, profile, background, trainingMode)
         } catch (error) {
           await usePracticeStore.getState().endSession()
           throw new Error(error instanceof Error ? `对话前 PDF 保存失败：${error.message}` : '对话前 PDF 保存失败，请重试')
@@ -199,7 +199,7 @@ const PracticePage = () => {
           <div>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-900">选择训练模块</h2>
-              <span className="text-sm text-gray-500">2 个训练模块</span>
+              <span className="text-sm text-gray-500">3 个训练模块</span>
             </div>
 
             {isLoadingScenarios ? (
@@ -214,7 +214,7 @@ const PracticePage = () => {
               </div>
             ) : (
               <div className="grid gap-4 md:grid-cols-2">
-                {([{ mode: 'full', name: '完整销售对练', description: '从初次接触到推进下一步，练习完整销售沟通。' }, { mode: 'rejection', name: '拒绝挽回', description: '从客户拒绝开始，练习了解顾虑、回应异议和争取后续机会。' }] as const).map(module => (
+                {([{ mode: 'full', name: '完整销售对练', description: '从初次接触到推进下一步，练习完整销售沟通。' }, { mode: 'rejection', name: '拒绝挽回', description: '从客户拒绝开始，练习了解顾虑、回应异议和争取后续机会。' }, { mode: 'price_objection', name: '价格异议处理', description: '从客户提出价格顾虑开始，练习问清和什么相比、拆解价值并推进下一步。' }] as const).map(module => (
                   <button type="button" key={module.mode} onClick={() => chooseModule(module.mode)} className="rounded-xl border-2 border-blue-100 bg-white p-6 text-left shadow-sm transition hover:border-blue-600 hover:bg-blue-50 focus-visible:outline-blue-600">
                     <h3 className="text-xl font-semibold text-blue-800">{module.name}</h3>
                     <p className="mt-3 text-sm leading-relaxed text-gray-600">{module.description}</p>
@@ -272,7 +272,7 @@ const PracticePage = () => {
                               {entry.profile.organization || entry.profile.target || entry.profile.product || '未命名对象'}
                             </p>
                             <p className="mt-1 truncate text-xs text-gray-600">
-                              {entry.trainingMode === 'rejection' ? '拒绝挽回' : '完整销售对练'} · {entry.profile.target || entry.profile.product}
+                              {entry.trainingMode === 'rejection' ? '拒绝挽回' : entry.trainingMode === 'price_objection' ? '价格异议处理' : '完整销售对练'} · {entry.profile.target || entry.profile.product}
                             </p>
                             <p className="mt-1 text-xs text-gray-400">{new Date(entry.createdAt).toLocaleString()}</p>
                           </div>

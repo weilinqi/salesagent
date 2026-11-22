@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
 import type { Background, PreparationProfile } from './CustomerPreparation'
 
-export default function SalesMaterialPreview({ profile, background }: { profile: PreparationProfile; background: Background }) {
+export default function SalesMaterialPreview({ profile, background, trainingMode = 'full' }: { profile: PreparationProfile; background: Background; trainingMode?: 'full' | 'rejection' | 'price_objection' }) {
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -15,7 +15,7 @@ export default function SalesMaterialPreview({ profile, background }: { profile:
     controller.current = request
     setBusy(true); setError('')
     try {
-      const response = await axios.post('/api/v1/practice/preparation/material.pdf', { profile, background }, { responseType: 'blob', signal: request.signal, timeout: 30000 })
+      const response = await axios.post('/api/v1/practice/preparation/material.pdf', { profile, background, training_mode: trainingMode }, { responseType: 'blob', signal: request.signal, timeout: 30000 })
       if (!request.signal.aborted) setUrl(URL.createObjectURL(response.data))
     } catch (err) {
       if (!request.signal.aborted) {
