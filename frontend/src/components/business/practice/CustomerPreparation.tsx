@@ -31,7 +31,7 @@ const unknownValues = new Set(['', '未知', '不清楚', '不知道', '待补�
 const isKnown = (value: string) => !unknownValues.has(value.trim())
 type ResearchSource = { title: string; summary: string; url: string; date?: string; publisher?: string; topic?: string }
 type PriceEvidence = { price: string; snippet: string; title: string; url: string; date?: string }
-type PriceComparison = { aspect: string; entries: { slot: string; brand: string; evidence: PriceEvidence[] }[]; market_reference: PriceEvidence[]; notice: string }
+type PriceComparison = { aspect: string; entries: { slot: string; brand: string; evidence: PriceEvidence[] }[]; market_reference: PriceEvidence[]; organized?: string[]; notice: string }
 export type Background = { digest_version?: number; roles?: Record<string, string>; insights?: { title: string; summary: string; caveat?: string; sources: ResearchSource[] }[]; search_key?: string; gaps?: string[]; basic_background?: string; organization: string; overview?: { title: string; summary: string; url: string; date?: string; publisher?: string; topic?: string } | null; sources: { title: string; summary: string; url: string; date?: string; publisher?: string; topic?: string }[]; notice: string; checked_at?: string; price_comparison?: PriceComparison }
 
 function localPriceComparison(profile: PreparationProfile): PriceComparison | undefined {
@@ -47,6 +47,7 @@ function localPriceComparison(profile: PreparationProfile): PriceComparison | un
       ...(profile.price_brand_c ? [{ slot: 'C', brand: profile.price_brand_c, evidence }] : []),
     ],
     market_reference: [],
+    organized: [`A｜${profile.price_brand_a || '未填写'}：保留客户填写的价格比较信息，等待公开来源补充。`, `B｜${profile.price_brand_b || '未填写'}：保留客户填写的价格比较信息，等待公开来源补充。`],
     notice: '联网检索超时或暂不可用；以上内容仅来自你填写的价格比较信息，未完成外部核验。',
   }
 }
@@ -188,6 +189,10 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
         {profile.price_brand_c && <li>C｜{profile.price_brand_c}：{sourceCount('C品牌价格资料')} 条来源</li>}
         <li>行业市场参考：{sourceCount('市场参考价')} 条来源，仅作参考，不代表 A/B 官方报价</li>
       </ul>
+      {priceComparison.organized?.length ? <div className="mt-3 rounded-lg border border-amber-200 bg-white p-3 text-xs">
+        <p className="font-semibold text-amber-900">自动整理</p>
+        <ul className="mt-1 list-disc space-y-1 pl-5 text-gray-700">{priceComparison.organized.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul>
+      </div> : null}
       <div className="mt-3 overflow-hidden rounded-lg border border-amber-200 bg-white">
         <div className="grid grid-cols-[3.5rem_1fr] gap-2 border-b bg-amber-100 px-3 py-2 text-xs font-semibold text-amber-900">
           <span>品牌</span><span>明确价格与来源</span>

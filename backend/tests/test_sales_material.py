@@ -110,7 +110,7 @@ class MaterialTests(unittest.IsolatedAsyncioTestCase):
              patch('app.services.sales_material.make_plans', return_value=[]), \
              patch('app.services.sales_material.search_via_mcp', new=AsyncMock(return_value=[])) as search, \
              patch('app.services.sales_material.summarize', new=AsyncMock(return_value=[])) as summarize:
-            await research('', '数学一对一课程', '', '高三家长', 'price_objection',
+            await research('石家庄市第二中学', '数学一对一课程', '', '高三家长', 'price_objection',
                            '学而思', '新东方', '高途', '单课时价格')
         queries = '\n'.join(call.args[0] for call in search.await_args_list)
         self.assertIn('学而思', queries)
@@ -118,8 +118,17 @@ class MaterialTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('高途', queries)
         self.assertIn('单课时价格', queries)
         self.assertIn('市场 价格 区间', queries)
+        self.assertIn('官网', queries)
+        self.assertIn('公众号', queries)
+        self.assertIn('石家庄', queries)
         identify.assert_not_awaited()
         summarize.assert_not_awaited()
+
+    def test_school_aliases_cover_numbered_school_short_name(self):
+        from app.services.research_digest import entity_aliases
+        aliases = entity_aliases('石家庄市第二中学')
+        self.assertIn('石家庄市第二中学', aliases)
+        self.assertIn('石家庄二中', aliases)
 
     def test_price_evidence_keeps_explicit_amount_and_source_without_guessing(self):
         from app.services.sales_material import extract_price_evidence
