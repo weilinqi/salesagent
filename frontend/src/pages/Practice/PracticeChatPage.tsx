@@ -18,8 +18,8 @@ import { useWebSocket, StreamMessage, KnowledgeRef } from '../../hooks/useWebSoc
 import { useAudioStream } from '../../hooks/useAudioStream'
 import ChatContainer from '../../components/business/practice/ChatContainer'
 import PhaseSummaryModal from '../../components/business/practice/PhaseSummaryModal'
-import SpinStageHint from '../../components/business/practice/SpinStageHint'
-import DealProgressPanel, { type DealProgress } from '../../components/business/practice/DealProgressPanel'
+import PracticeSidebar from '../../components/business/practice/PracticeSidebar'
+import type { DealProgress } from '../../components/business/practice/DealProgressPanel'
 import PracticeMaterialsPanel from '../../components/business/practice/PracticeMaterialsPanel'
 import api, { RoleConfig } from '../../api/practice'
 import { loadSessionHistory } from '../../utils/sessionHistory'
@@ -137,6 +137,7 @@ const PracticeChatPage = () => {
   const [isEndingDeal, setIsEndingDeal] = useState(false)
   const [isForceEnding, setIsForceEnding] = useState(false)
   const [forceEnded, setForceEnded] = useState(false)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const targetSessionId = searchParams.get('sessionId') || currentSession?.id || null
   const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
@@ -529,6 +530,12 @@ const PracticeChatPage = () => {
     }
   }, [currentSession?.id, isForceEnding, forceEnded, handleGetPhaseSummary])
 
+  // 只有家长给了终局表态（报名/明确拒绝/还在犹豫）才显示"结束对练并生成报告"
+  const dealClosingReady = Boolean(
+    dealProgress?.closing?.suggest
+    && ['won', 'lost_explicit', 'lost_soft'].includes(dealProgress?.closing?.result || ''),
+  )
+
   if (historyError) return (
     <div role="alert" className="p-8 text-center space-y-4">
       <p>{historyError}</p>
@@ -659,10 +666,12 @@ const PracticeChatPage = () => {
             onResumeAudio={audioStream.resume}
           />
         </div>
-        {/* OR-4: Real-time SPIN Stage Hint Sidebar */}
-        <div className="w-80 border-l border-gray-200 bg-gray-50 overflow-y-auto p-3">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <p className="text-xs font-medium text-gray-500">{currentSession?.training_mode === 'price_objection' ? '实时价格异议指导' : '实时SPIN指导'}</p>
+        {/* 右侧栏：三段式（焦点卡 / 进度行 / 折叠区），可收起 */}
+        <PracticeSidebar
+          key={currentSession?.id}
+          deal={dealProgress}
+          guidance={spinGuidance || (currentSession?.training_mode === 'price_objection' ? INITIAL_PRICE_OBJECTION_GUIDANCE : INITIAL_SPIN_GUIDANCE)}
+          materials={(
             <PracticeMaterialsPanel
               sessionId={currentSession?.id}
               profile={currentSession?.customer_context?.preparation}
@@ -673,30 +682,30 @@ const PracticeChatPage = () => {
               searchQuery={spinGuidance?.last_search_query}
               updatedAt={spinGuidance?.updated_at}
             />
-          </div>
-          <DealProgressPanel progress={dealProgress} onEnd={handleEndDeal} ending={isEndingDeal} />
-          <SpinStageHint
-            key={currentSession?.id}
-            guidance={spinGuidance || (currentSession?.training_mode === 'price_objection' ? INITIAL_PRICE_OBJECTION_GUIDANCE : INITIAL_SPIN_GUIDANCE)}
-            updateStatus={spinGuidanceStatus}
-            updateError={spinGuidanceError}
-            updateDurationMs={spinGuidanceDurationMs}
-          />
-        </div>
+          )}
+          status={spinGuidanceStatus}
+          statusError={spinGuidanceError}
+          statusDurationMs={spinGuidanceDurationMs}
+          collapsed={isSidebarCollapsed}
+          onToggleCollapse={() => setIsSidebarCollapsed((value) => !value)}
+        />
       </div>
 
-      {/* Summary Button */}
+      {/* 底部工具条：结束类操作都放这里 */}
       <div className="bg-white border-t border-gray-200 px-4 py-3 flex justify-between items-center">
         <div className="text-sm text-gray-500">
-          当前阶段: <span className="font-medium text-primary">
-            {currentSession?.current_phase === 'opening' && '开场破冰'}
-            {currentSession?.current_phase === 'discovery' && '需求挖掘'}
-            {currentSession?.current_phase === 'needs' && '方案呈现'}
-            {currentSession?.current_phase === 'proposal' && '促成成交'}
-            {currentSession?.current_phase === 'closing' && '复盘总结'}
-          </span>
+          {currentSession?.status === 'completed' || forceEnded ? '历史对话 · 已结束' : '对练进行中'}
         </div>
         <div className="flex items-center gap-2">
+          {dealClosingReady && (
+            <button
+              onClick={handleEndDeal}
+              disabled={isEndingDeal}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-all"
+            >
+              {isEndingDeal ? '结束中…' : '结束对练并生成报告'}
+            </button>
+          )}
           <button
             onClick={handleForceEnd}
             disabled={currentSession?.status === 'completed' || forceEnded || isForceEnding}
