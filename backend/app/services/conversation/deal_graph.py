@@ -23,7 +23,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.services.conversation import deal_state
+from app.services.conversation import deal_state, milestones
 from app.services.conversation.deal_templates import get_template, resolve_template_id
 from app.services.llm import get_minimax_service
 
@@ -218,6 +218,8 @@ async def analyze_session(session_id: str) -> dict[str, Any] | None:
             parent_text=parent_text,
             sales_text=sales_text,
         )
+        # 里程碑：家长答应了试听/测评 → 标记"已约定"，前端浮出待办卡片
+        milestones.detect(flags, parent_text, round_number=round_number)
         stage = deal_state.compute_stage(state.get("stage", "opening"), slots, flags)
         coverage = deal_state.compute_coverage(slots, state.get("template_id"))
         closing = deal_state.detect_closing(
@@ -326,4 +328,71 @@ def finalize(session_id: str, explicit_result: str | None = None) -> dict[str, A
         cached[session_id] = state
     _persist(session_id, state)
     payload = deal_state.build_progress_payload(state)
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# 里程碑：学员确认"试听/测评已完成"后推进时间线
+# ---------------------------------------------------------------------------
+
+
+def _apply_milestone(
+    session_id: str,
+    milestone_id: str,
+    outcome: str | None,
+    reopen: bool,
+) -> dict[str, Any]:
+    """同步落库：更新 flags.milestones 并返回最新 payload。"""
+    from app.websocket.manager import manager
+
+    state = load_state(session_id) or deal_state.new_state()
+    flags = dict(state.get("flags") or {})
+    if reopen:
+        milestones.reopen(flags, milestone_id)
+    else:
+        milestones.complete(flags, milestone_id, str(outcome))
+    state["flags"] = flags
+    state["updated_at"] = deal_state._now()
+
+    cached = getattr(manager, "_deal_states", None)
+    if not isinstance(cached, dict):
+        manager._deal_states = cached = {}
+    cached[session_id] = state
+
+    _persist(session_id, state)
+    return deal_state.build_progress_payload(state)
+
+
+def _notice_for(milestone_id: str, outcome: str | None, reopen: bool) -> str:
+    if reopen:
+        definition = milestones.MILESTONES.get(milestone_id) or {}
+        return f"⏪ 已撤销「{definition.get('label', milestone_id)}」的完成状态，回到未完成"
+    return milestones.render_system_notice(milestone_id, str(outcome))
+
+
+async def complete_milestone(session_id: str, milestone_id: str, outcome: str) -> dict[str, Any]:
+    """学员点"已完成 + 结果"：推进时间线，并把新状态推给前端。"""
+    from app.websocket.manager import manager
+
+    payload = await asyncio.to_thread(_apply_milestone, session_id, milestone_id, outcome, False)
+    await manager.send_message(session_id, {"type": "deal_progress", "data": payload})
+    notice = _notice_for(milestone_id, outcome, False)
+    if notice:
+        await manager.send_message(session_id, {
+            "type": "milestone_event",
+            "data": {"id": milestone_id, "outcome": outcome, "notice": notice},
+        })
+    return payload
+
+
+async def reopen_milestone(session_id: str, milestone_id: str) -> dict[str, Any]:
+    """点错了改期重来：回到"已约定但未完成"。"""
+    from app.websocket.manager import manager
+
+    payload = await asyncio.to_thread(_apply_milestone, session_id, milestone_id, None, True)
+    await manager.send_message(session_id, {"type": "deal_progress", "data": payload})
+    await manager.send_message(session_id, {
+        "type": "milestone_event",
+        "data": {"id": milestone_id, "outcome": None, "notice": _notice_for(milestone_id, None, True)},
+    })
     return payload

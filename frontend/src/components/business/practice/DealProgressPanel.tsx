@@ -41,6 +41,15 @@ export interface DealProgress {
   closing: { suggest: boolean; reason: string | null; result: string | null; nudge?: string | null }
   /** 是否已经约到试听：过程节点，用于提示继续推动报名，不出现结束按钮 */
   trial_agreed?: boolean
+  /** 里程碑状态：trial / assessment */
+  milestones?: Record<string, { status: string; result: string | null; at_round?: number }>
+  /** 待办事件卡：家长已答应试听/测评，等学员确认完成 */
+  pending_event?: {
+    id: string
+    title: string
+    description?: string
+    outcomes: Array<{ value: string; label: string }>
+  } | null
   deal_result: string | null
   round_number: number
 }

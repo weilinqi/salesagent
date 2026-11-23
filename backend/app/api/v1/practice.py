@@ -45,6 +45,11 @@ class EndSessionRequest(BaseModel):
     result: Optional[str] = None
 
 
+class MilestoneCompleteRequest(BaseModel):
+    """里程碑结果：试听 satisfied/neutral/unsatisfied；测评 matched/gap/weak。"""
+    outcome: str
+
+
 async def require_practice_access(request: Request, db: Session = Depends(get_db),
                                   current_user: User = Depends(get_current_user)):
     """Every practice route requires login; session routes require ownership."""
@@ -311,6 +316,39 @@ async def get_deal_state(session_id: UUID, db: Session = Depends(get_db)):
     if state is None:
         state = deal_state.new_state()
     return deal_state.build_progress_payload(state)
+
+
+@router.post("/sessions/{session_id}/milestones/{milestone_id}/complete")
+async def complete_milestone_endpoint(session_id: UUID, milestone_id: str,
+                                      payload: MilestoneCompleteRequest,
+                                      db: Session = Depends(get_db)):
+    """学员确认"试听/测评已完成"并选择结果 → 时间线推进，AI 家长进入下一幕。"""
+    session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+
+    from app.services.conversation import deal_graph
+
+    try:
+        return await deal_graph.complete_milestone(str(session_id), milestone_id, payload.outcome)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
+
+
+@router.post("/sessions/{session_id}/milestones/{milestone_id}/reopen")
+async def reopen_milestone_endpoint(session_id: UUID, milestone_id: str,
+                                    db: Session = Depends(get_db)):
+    """撤销完成状态（点错了改期重来）。"""
+    session = db.query(PracticeSession).filter(PracticeSession.id == str(session_id)).first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+
+    from app.services.conversation import deal_graph
+
+    try:
+        return await deal_graph.reopen_milestone(str(session_id), milestone_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
 
 
 @router.post("/sessions/{session_id}/end")

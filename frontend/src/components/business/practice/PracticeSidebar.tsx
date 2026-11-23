@@ -48,6 +48,8 @@ interface Props {
   statusDurationMs?: number | null
   /** 待办事件卡（里程碑功能接入后填充） */
   pendingEvent?: PendingEvent | null
+  /** 撤销入口：点错了可以把里程碑改回"未完成" */
+  undoAction?: { label: string; onClick: () => void } | null
   collapsed: boolean
   onToggleCollapse: () => void
   className?: string
@@ -82,7 +84,7 @@ function SectionToggle({
 
 export default function PracticeSidebar({
   deal, guidance, materials, status, statusError, statusDurationMs,
-  pendingEvent, collapsed, onToggleCollapse, className = '',
+  pendingEvent, undoAction, collapsed, onToggleCollapse, className = '',
 }: Props) {
   const [openSection, setOpenSection] = useState<'gaps' | 'facts' | 'refs' | null>(null)
   const [showProgressDetail, setShowProgressDetail] = useState(false)
@@ -369,6 +371,16 @@ export default function PracticeSidebar({
           </div>
         )}
       </div>
+
+      {undoAction && (
+        <button
+          type="button"
+          onClick={undoAction.onClick}
+          className="self-start text-[10px] text-gray-400 underline-offset-2 transition-colors hover:text-gray-600 hover:underline"
+        >
+          {undoAction.label}
+        </button>
+      )}
     </aside>
   )
 }
