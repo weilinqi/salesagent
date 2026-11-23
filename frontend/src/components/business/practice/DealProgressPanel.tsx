@@ -38,7 +38,9 @@ export interface DealProgress {
   }
   slots: DealSlot[]
   gaps: DealGap[]
-  closing: { suggest: boolean; reason: string | null; result: string | null }
+  closing: { suggest: boolean; reason: string | null; result: string | null; nudge?: string | null }
+  /** 是否已经约到试听：过程节点，用于提示继续推动报名，不出现结束按钮 */
+  trial_agreed?: boolean
   deal_result: string | null
   round_number: number
 }
@@ -75,8 +77,21 @@ export default function DealProgressPanel({ progress, onEnd, ending = false, cla
   const currentIndex = Math.max(order.indexOf(progress.stage), 0)
   const requiredSlots = slots.filter((slot) => slot.level === 'required')
   const filledRequired = requiredSlots.filter((slot) => slot.filled)
-  // 试听谈成了也算成功收尾，不只是"报名"
-  const closeIsGood = closing?.result === 'won' || closing?.result === 'trial'
+  // 只有家长给了终局表态（报名 / 明确拒绝 / 还在犹豫）才允许结束；
+  // 约试听只是过程节点，不算结束。
+  const closeResult = closing?.result || null
+  const closeIsWon = closeResult === 'won'
+  const closeIsRefusal = closeResult === 'lost_explicit'
+  const closeIsHesitating = closeResult === 'lost_soft'
+  // 只有终局表态才允许出现结束按钮；历史数据里的 trial / 空结果一律不算
+  const canEnd = closeIsWon || closeIsRefusal || closeIsHesitating
+  const closeHeadline = closeIsWon
+    ? '已经谈成了，可以结束对练'
+    : closeIsRefusal
+      ? '家长已明确拒绝，可以结束对练'
+      : closeIsHesitating
+        ? '家长还在犹豫，可以结束并记录跟进'
+        : '可以结束对练'
 
   return (
     <div className={`rounded-xl border border-gray-200 bg-white p-3 space-y-3 ${className}`}>
@@ -170,14 +185,22 @@ export default function DealProgressPanel({ progress, onEnd, ending = false, cla
         </div>
       )}
 
-      {/* 收尾建议 */}
-      {closing?.suggest && (
-        <div className={`rounded-lg border px-2 py-1.5 ${closeIsGood ? 'border-emerald-200 bg-emerald-50' : 'border-blue-200 bg-blue-50'}`}>
-          <p className={`text-[11px] font-medium ${closeIsGood ? 'text-emerald-700' : 'text-blue-700'}`}>
-            {closeIsGood ? '已经谈成了，可以结束对练' : '可以尝试收尾了'}
+      {/* 结束建议：只有家长明确表态（报名/拒绝/犹豫）才出现 */}
+      {closing?.suggest && canEnd ? (
+        <div className={`rounded-lg border px-2 py-1.5 ${
+          closeIsWon ? 'border-emerald-200 bg-emerald-50'
+            : closeIsHesitating ? 'border-amber-200 bg-amber-50'
+              : 'border-gray-200 bg-gray-50'
+        }`}>
+          <p className={`text-[11px] font-medium ${
+            closeIsWon ? 'text-emerald-700' : closeIsHesitating ? 'text-amber-700' : 'text-gray-700'
+          }`}>
+            {closeHeadline}
           </p>
           {closing.reason && (
-            <p className={`text-[10px] leading-snug ${closeIsGood ? 'text-emerald-600' : 'text-blue-600'}`}>
+            <p className={`text-[10px] leading-snug ${
+              closeIsWon ? 'text-emerald-600' : closeIsHesitating ? 'text-amber-600' : 'text-gray-500'
+            }`}>
               {closing.reason}
             </p>
           )}
@@ -186,12 +209,28 @@ export default function DealProgressPanel({ progress, onEnd, ending = false, cla
               type="button"
               onClick={onEnd}
               disabled={ending}
-              className="mt-1.5 w-full rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+              className={`mt-1.5 w-full rounded-md px-2 py-1 text-[11px] font-medium text-white transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                closeIsWon ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : closeIsHesitating ? 'bg-amber-600 hover:bg-amber-700'
+                    : 'bg-gray-600 hover:bg-gray-700'
+              }`}
             >
               {ending ? '正在结束…' : '结束对练并生成报告'}
             </button>
           )}
         </div>
+      ) : (
+        <>
+          {progress.trial_agreed && (
+            <div className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5">
+              <p className="text-[11px] font-medium text-blue-700">已约试听 · 继续推动报名</p>
+              <p className="text-[10px] leading-snug text-blue-600">
+                试听只是过程节点，把话题推到「报不报名」才算结束
+              </p>
+            </div>
+          )}
+          {closing?.nudge && <p className="text-[10px] leading-snug text-gray-500">{closing.nudge}</p>}
+        </>
       )}
 
       {/* 结单结果 */}
