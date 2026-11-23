@@ -33,12 +33,16 @@ OBJECTION_TERMS = (
 )
 
 # 结单结果信号（只从家长的话里判断）
+# 结单结果信号（只从家长的话里判断）。
+# 注意：**试听不是结单结果**——约到试听只是中间一步，对练还要继续推到报名。
 RESULT_SIGNALS: list[tuple[str, tuple[str, ...]]] = [
     ("won", ("报名", "缴费", "交钱", "刷卡", "就定你们", "定下来了", "什么时候开课", "签合同")),
-    ("trial", ("试听", "体验课", "来上一节", "安排一节课")),
     ("lost_explicit", ("不需要", "不考虑", "不报了", "不学了", "别打了", "没兴趣", "算了")),
     ("lost_soft", ("再想想", "商量", "回去说", "考虑一下", "过几天", "问一下他爸", "问一下他妈")),
 ]
+
+# 只用来识别"约到试听"，用于提示继续推进，不参与结单判定
+TRIAL_TERMS = ("试听", "体验课", "来上一节", "安排一节课")
 
 # 家长"表态"的信号：问句里没有这些词时，只能算打听，不能算结单
 # 注意：不要放"安排""来""好"这类词——"怎么安排"是打听，不是表态
@@ -52,7 +56,7 @@ _WHITESPACE = re.compile(r"\s+")
 
 RESULT_LABELS = {
     "won": "成交",
-    "trial": "约了试听",
+    "trial": "已约试听",
     "lost_explicit": "明确拒绝",
     "lost_soft": "考虑中（可跟进）",
     "incomplete": "提前终止",
@@ -268,6 +272,9 @@ def update_flags(flags: dict[str, Any], *, parent_turns: int, parent_text: str, 
         updated["course_introduced"] = True
     if parent_text and any(term in parent_text for term in OBJECTION_TERMS):
         updated["objection_raised"] = True
+    # 约到试听只记进度，不结单
+    if detect_trial(parent_text):
+        updated["trial_agreed"] = True
     return updated
 
 
@@ -277,10 +284,12 @@ def update_flags(flags: dict[str, Any], *, parent_turns: int, parent_text: str, 
 
 
 def detect_result(parent_text: str) -> str | None:
-    """从家长最新话术判断结单结果，判断不出返回 None。
+    """从家长最新话术判断**结单**结果，判断不出返回 None。
 
-    只在"打听"不算表态：家长问"试听课怎么安排？"只是询问细节，
-    不能据此判定他约了试听；必须有表态词（约/安排/可以/吧…）才算。
+    只认三种终局表态：报名成交、明确拒绝、还在犹豫。
+    约试听是中间步骤，不算结单（见 ``detect_trial``）。
+
+    只在"打听"不算表态：家长问"报名怎么弄？"只是询问，不能据此判定成交。
     """
     if not parent_text:
         return None
@@ -293,11 +302,28 @@ def detect_result(parent_text: str) -> str | None:
     for result, words in RESULT_SIGNALS:
         if not any(word in text for word in words):
             continue
-        # 成交与试听：纯问句且没有表态词，视为还在打听
-        if result in ("won", "trial") and asking and not agreed:
+        # 成交：纯问句且没有表态词，视为还在打听
+        if result == "won" and asking and not agreed:
             continue
         return result
     return None
+
+
+def detect_trial(parent_text: str) -> bool:
+    """家长是否已同意约试听。
+
+    试听只是过程节点，用来提示"接下来要推动报名"，不参与结单判定。
+    """
+    if not parent_text:
+        return False
+    text = _WHITESPACE.sub("", parent_text)
+    if not text:
+        return False
+    if not any(term in text for term in TRIAL_TERMS):
+        return False
+    asking = any(marker in text for marker in QUESTION_MARKERS)
+    agreed = any(marker in text for marker in AGREEMENT_MARKERS)
+    return not (asking and not agreed)
 
 
 def detect_closing(
@@ -306,7 +332,11 @@ def detect_closing(
     coverage: dict[str, int],
     latest_parent_text: str,
 ) -> dict[str, Any]:
-    """判断是否该建议收尾。**只建议，不自动结束。**"""
+    """判断是否可以结束对练。**只建议，不自动结束。**
+
+    结束的前提是家长给了终局表态：报名 / 明确拒绝 / 还在犹豫。
+    约试听、信息收集齐全都只是过程，不构成结束条件。
+    """
     stage = state.get("stage", "opening")
     round_number = int(state.get("round_number") or 0)
     last_gain = int(state.get("last_gain_round") or 0)
@@ -315,22 +345,15 @@ def detect_closing(
     if result:
         return {"suggest": True, "reason": f"家长已表态：{RESULT_LABELS[result]}", "result": result}
 
-    if stage == "closing" and coverage["percent"] >= 90:
-        return {
-            "suggest": True,
-            "reason": f"关键信息已收集 {coverage['required_filled']}/{coverage['required_total']}，可以尝试收尾",
-            "result": None,
-        }
-
+    # 不能结束，但可以给一句"往报名推"的轻提示（前端只显示文字，不给结束按钮）
+    nudge = None
     stale = round_number - last_gain
-    if round_number >= 12 and stale >= STALE_ROUNDS and slot_delta_count == 0:
-        return {
-            "suggest": True,
-            "reason": f"最近 {stale} 轮没有新信息，建议主动收尾",
-            "result": None,
-        }
+    if stage == "closing" and coverage["percent"] >= 90:
+        nudge = f"关键信息已收集 {coverage['required_filled']}/{coverage['required_total']}，可以把话题引到报名上"
+    elif round_number >= 12 and stale >= STALE_ROUNDS and slot_delta_count == 0:
+        nudge = f"最近 {stale} 轮没有新信息，直接问家长是否决定报名"
 
-    return {"suggest": False, "reason": None, "result": None}
+    return {"suggest": False, "reason": None, "result": None, "nudge": nudge}
 
 
 def finalize_result(state: dict[str, Any], coverage: dict[str, int]) -> str:
@@ -364,6 +387,8 @@ def build_progress_payload(state: dict[str, Any]) -> dict[str, Any]:
         "slots": slot_board(slots, template_id),
         "gaps": compute_gaps(slots, template_id, stage),
         "closing": state.get("closing") or {"suggest": False, "reason": None, "result": None},
+        # 约到试听只是过程节点：前端据此提示"继续推动报名"，不出现结束按钮
+        "trial_agreed": bool((state.get("flags") or {}).get("trial_agreed")),
         "deal_result": state.get("deal_result"),
         "round_number": int(state.get("round_number") or 0),
         "updated_at": state.get("updated_at") or _now(),

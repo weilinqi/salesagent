@@ -168,8 +168,10 @@ class ClosingTests(unittest.TestCase):
     def test_detects_won(self):
         self.assertEqual(deal_state.detect_result("那就报名吧，怎么缴费"), "won")
 
-    def test_detects_trial(self):
-        self.assertEqual(deal_state.detect_result("那先安排一节试听看看"), "trial")
+    def test_detects_trial_is_not_a_result(self):
+        """试听不再作为结单结果返回，只作为过程标记。"""
+        self.assertIsNone(deal_state.detect_result("那先安排一节试听看看"))
+        self.assertTrue(deal_state.detect_trial("那先安排一节试听看看"))
 
     def test_detects_explicit_refusal(self):
         self.assertEqual(deal_state.detect_result("不用了，我们不考虑"), "lost_explicit")
@@ -184,10 +186,28 @@ class ClosingTests(unittest.TestCase):
         """只是打听试听怎么安排，不能判成"已约试听"。"""
         self.assertIsNone(deal_state.detect_result("你说的试听课具体讲哪部分？"))
         self.assertIsNone(deal_state.detect_result("试听课怎么安排？"))
+        self.assertFalse(deal_state.detect_trial("试听课怎么安排？"))
 
-    def test_agreeing_to_trial_counts_as_close(self):
-        self.assertEqual(deal_state.detect_result("那约个试听吧"), "trial")
-        self.assertEqual(deal_state.detect_result("行，安排一节试听可以"), "trial")
+    def test_trial_agreement_is_tracked_but_never_closes(self):
+        """约到试听只是过程节点：要记录，但不能当结单。"""
+        self.assertEqual(deal_state.detect_result("那约个试听吧"), None)
+        self.assertTrue(deal_state.detect_trial("那约个试听吧"))
+        self.assertTrue(deal_state.detect_trial("行，安排一节试听可以"))
+
+    def test_trial_does_not_suggest_closing(self):
+        closing = deal_state.detect_closing(
+            {"stage": "closing", "round_number": 9, "last_gain_round": 9},
+            slot_delta_count=1,
+            coverage={"required_total": 14, "required_filled": 14, "percent": 100},
+            latest_parent_text="那先约个试听吧",
+        )
+        self.assertFalse(closing["suggest"])
+        self.assertIsNone(closing["result"])
+
+    def test_update_flags_records_trial_agreement(self):
+        flags = deal_state.update_flags({}, parent_turns=3,
+                                        parent_text="那约个试听吧", sales_text="我们课程有试听")
+        self.assertTrue(flags.get("trial_agreed"))
 
     def test_asking_about_enrolling_is_not_won(self):
         self.assertIsNone(deal_state.detect_result("报名怎么弄？"))
@@ -202,15 +222,16 @@ class ClosingTests(unittest.TestCase):
         self.assertTrue(closing["suggest"])
         self.assertEqual(closing["result"], "lost_soft")
 
-    def test_closing_suggested_when_coverage_high(self):
+    def test_high_coverage_only_nudges_never_suggests_closing(self):
+        """信息收集齐了也不能结束，只给一句往报名推的提示。"""
         closing = deal_state.detect_closing(
             {"stage": "closing", "round_number": 9, "last_gain_round": 9},
             slot_delta_count=1,
             coverage={"required_total": 14, "required_filled": 13, "percent": 93},
             latest_parent_text="嗯，然后呢",
         )
-        self.assertTrue(closing["suggest"])
-        self.assertIsNone(closing["result"])
+        self.assertFalse(closing["suggest"])
+        self.assertTrue(closing["nudge"])
 
     def test_no_suggestion_early_in_conversation(self):
         closing = deal_state.detect_closing(
