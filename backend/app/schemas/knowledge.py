@@ -56,7 +56,7 @@ class DocumentResponse(DocumentBase):
 class KnowledgeSearchRequest(BaseModel):
     """Schema for knowledge base search request."""
     query: str = Field(..., min_length=1, max_length=500, description="Search query text")
-    mode: Literal['local', 'auto', 'web'] = 'local'
+    mode: Literal['local', 'auto', 'web'] = 'auto'
     top_k: int = Field(default=5, description="Number of results to return", ge=1, le=20)
     source_filter: Optional[str] = Field(None, description="Filter by source")
     category: Optional[str] = Field(None, description="Filter by category (spin, solution_selling, etc.)")
@@ -94,7 +94,13 @@ class KnowledgeSearchResponse(BaseModel):
     total: int
     web_results: List[WebSearchResult] = Field(default_factory=list)
     notices: List[str] = Field(default_factory=list)
-    mode: Literal['local', 'auto', 'web'] = 'local'
+    mode: Literal['local', 'auto', 'web'] = 'auto'
+    # 检索路由的决策信息（mode='auto' 时由 search_router 填充）
+    route: str = Field(default='local', description="internal/external/hybrid/none：本轮实际走了哪条路")
+    sufficiency: int = Field(default=0, description="证据充分性 0-3，>=2 视为够用")
+    route_reason: str = Field(default='', description="路由判断理由，便于排查")
+    forbidden_web: bool = Field(default=False, description="是否因涉及第三方评价而被禁止联网")
+    trace: List[str] = Field(default_factory=list, description="每一步的耗时与决策")
 
 
 class KnowledgeIngestRequest(BaseModel):
