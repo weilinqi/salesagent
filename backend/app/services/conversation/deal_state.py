@@ -62,6 +62,29 @@ RESULT_LABELS = {
     "incomplete": "提前终止",
 }
 
+# 只有这三种是"终局表态"，才允许结束对练
+TERMINAL_RESULTS = ("won", "lost_explicit", "lost_soft")
+
+
+def sanitize_closing(closing: dict[str, Any] | None) -> dict[str, Any]:
+    """把历史遗留的结单建议纠正回当前规则。
+
+    改造前把「约了试听」也算成可以结束，数据库里可能存着
+    ``{"suggest": true, "result": "trial"}``；也可能存着"信息收集齐了"
+    这种非终局建议。读到这些旧数据时必须作废，否则页面一刷新又出现结束按钮。
+    """
+    if not isinstance(closing, dict):
+        return {"suggest": False, "reason": None, "result": None}
+    result = closing.get("result")
+    if result in TERMINAL_RESULTS:
+        return closing
+    return {
+        "suggest": False,
+        "reason": None,
+        "result": None,
+        "nudge": closing.get("nudge") or None,
+    }
+
 # 覆盖率低于该值就结束时，记为"提前终止"
 INCOMPLETE_THRESHOLD = 60
 # 连续多少轮没有新信息就建议收尾
@@ -376,6 +399,15 @@ def build_progress_payload(state: dict[str, Any]) -> dict[str, Any]:
     slots = state.get("slots") or {}
     stage = state.get("stage", "opening")
     coverage = compute_coverage(slots, template_id)
+    raw_closing = state.get("closing") or {}
+    closing = sanitize_closing(raw_closing)
+    # 旧数据里把"约了试听"当成结单结果，这里一并纠正成过程标记
+    trial_agreed = bool((state.get("flags") or {}).get("trial_agreed"))
+    if isinstance(raw_closing, dict) and raw_closing.get("result") == "trial":
+        trial_agreed = True
+    deal_result = state.get("deal_result")
+    if deal_result not in TERMINAL_RESULTS and deal_result != "incomplete":
+        deal_result = None
     return {
         "template_id": template_id,
         "template_name": get_template(template_id)["name"],
@@ -386,10 +418,10 @@ def build_progress_payload(state: dict[str, Any]) -> dict[str, Any]:
         "coverage": coverage,
         "slots": slot_board(slots, template_id),
         "gaps": compute_gaps(slots, template_id, stage),
-        "closing": state.get("closing") or {"suggest": False, "reason": None, "result": None},
+        "closing": closing,
         # 约到试听只是过程节点：前端据此提示"继续推动报名"，不出现结束按钮
-        "trial_agreed": bool((state.get("flags") or {}).get("trial_agreed")),
-        "deal_result": state.get("deal_result"),
+        "trial_agreed": trial_agreed,
+        "deal_result": deal_result,
         "round_number": int(state.get("round_number") or 0),
         "updated_at": state.get("updated_at") or _now(),
     }

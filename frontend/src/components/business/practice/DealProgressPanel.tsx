@@ -83,6 +83,8 @@ export default function DealProgressPanel({ progress, onEnd, ending = false, cla
   const closeIsWon = closeResult === 'won'
   const closeIsRefusal = closeResult === 'lost_explicit'
   const closeIsHesitating = closeResult === 'lost_soft'
+  // 只有终局表态才允许出现结束按钮；历史数据里的 trial / 空结果一律不算
+  const canEnd = closeIsWon || closeIsRefusal || closeIsHesitating
   const closeHeadline = closeIsWon
     ? '已经谈成了，可以结束对练'
     : closeIsRefusal
@@ -184,7 +186,7 @@ export default function DealProgressPanel({ progress, onEnd, ending = false, cla
       )}
 
       {/* 结束建议：只有家长明确表态（报名/拒绝/犹豫）才出现 */}
-      {closing?.suggest ? (
+      {closing?.suggest && canEnd ? (
         <div className={`rounded-lg border px-2 py-1.5 ${
           closeIsWon ? 'border-emerald-200 bg-emerald-50'
             : closeIsHesitating ? 'border-amber-200 bg-amber-50'

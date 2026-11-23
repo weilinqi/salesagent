@@ -270,6 +270,30 @@ class PayloadTests(unittest.TestCase):
         payload = deal_state.build_progress_payload(deal_state.new_state("k12_senior"))
         self.assertEqual(payload["template_name"], get_template("k12_senior")["name"])
 
+    def test_legacy_trial_closing_is_invalidated(self):
+        """历史数据把"约了试听"当结单，读到时要作废。"""
+        state = deal_state.new_state("k12_junior")
+        state["closing"] = {"suggest": True, "reason": "家长已表态：约了试听", "result": "trial"}
+        state["deal_result"] = "trial"
+        payload = deal_state.build_progress_payload(state)
+        self.assertFalse(payload["closing"]["suggest"])
+        self.assertIsNone(payload["closing"]["result"])
+        self.assertTrue(payload["trial_agreed"])
+        self.assertIsNone(payload["deal_result"])
+
+    def test_legacy_coverage_suggestion_is_invalidated(self):
+        state = deal_state.new_state("k12_junior")
+        state["closing"] = {"suggest": True, "reason": "关键信息已收集 13/14", "result": None}
+        payload = deal_state.build_progress_payload(state)
+        self.assertFalse(payload["closing"]["suggest"])
+
+    def test_terminal_closing_survives(self):
+        state = deal_state.new_state("k12_junior")
+        state["closing"] = {"suggest": True, "reason": "家长已表态：成交", "result": "won"}
+        payload = deal_state.build_progress_payload(state)
+        self.assertTrue(payload["closing"]["suggest"])
+        self.assertEqual(payload["closing"]["result"], "won")
+
 
 if __name__ == "__main__":
     unittest.main()
