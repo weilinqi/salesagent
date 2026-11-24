@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services.conversation import milestones
 from app.services.conversation.deal_templates import (
     REQUIRED,
     STAGE_LABELS,
@@ -422,6 +423,9 @@ def build_progress_payload(state: dict[str, Any]) -> dict[str, Any]:
         # 约到试听只是过程节点：前端据此提示"继续推动报名"，不出现结束按钮
         "trial_agreed": trial_agreed,
         "deal_result": deal_result,
+        # 里程碑：试听/测评等时间节点
+        "milestones": milestones.summary(state.get("flags") or {}),
+        "pending_event": milestones.pending_event(state.get("flags") or {}),
         "round_number": int(state.get("round_number") or 0),
         "updated_at": state.get("updated_at") or _now(),
     }

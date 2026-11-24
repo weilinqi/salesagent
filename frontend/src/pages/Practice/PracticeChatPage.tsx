@@ -10,7 +10,7 @@
  *
  * Story: 1.2 语音对话与实时交互
  */
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import axios from 'axios'
 import { usePracticeStore } from '../../stores/practiceStore'
@@ -243,6 +243,18 @@ const PracticeChatPage = () => {
     }
     if (wsMessage.type === 'deal_progress' && wsMessage.data) {
       setDealProgress(wsMessage.data as unknown as DealProgress)
+      return
+    }
+    if (wsMessage.type === 'milestone_event' && wsMessage.data) {
+      const notice = (wsMessage.data as { notice?: string }).notice
+      if (notice) {
+        setMessages_((previous) => [...previous, {
+          id: `milestone-${Date.now()}`,
+          type: 'system' as const,
+          content: notice,
+          timestamp: new Date().toISOString(),
+        }])
+      }
       return
     }
     // Handle different message types from WebSocket
@@ -536,6 +548,53 @@ const PracticeChatPage = () => {
     && ['won', 'lost_explicit', 'lost_soft'].includes(dealProgress?.closing?.result || ''),
   )
 
+  const handleCompleteMilestone = useCallback(async (milestoneId: string, outcome: string) => {
+    const sessionId = currentSession?.id
+    if (!sessionId) return
+    try {
+      setDealProgress(await api.completeMilestone(sessionId, milestoneId, outcome))
+    } catch (error) {
+      console.error('里程碑提交失败', error)
+    }
+  }, [currentSession?.id])
+
+  const handleReopenMilestone = useCallback(async (milestoneId: string) => {
+    const sessionId = currentSession?.id
+    if (!sessionId) return
+    try {
+      setDealProgress(await api.reopenMilestone(sessionId, milestoneId))
+    } catch (error) {
+      console.error('撤销里程碑失败', error)
+    }
+  }, [currentSession?.id])
+
+  // 待办事件卡：家长已答应试听/测评，等学员确认结果
+  const pendingMilestoneEvent = useMemo(() => {
+    const event = dealProgress?.pending_event
+    if (!event) return null
+    return {
+      title: event.title,
+      description: event.description,
+      actions: event.outcomes.map((outcome) => ({
+        label: outcome.label,
+        onClick: () => void handleCompleteMilestone(event.id, outcome.value),
+      })),
+    }
+  }, [dealProgress?.pending_event, handleCompleteMilestone])
+
+  // 改期：已完成的里程碑可以撤销，回到"未完成"
+  const milestoneUndo = useMemo(() => {
+    const completed = Object.entries(dealProgress?.milestones || {})
+      .find(([, value]) => value.status === 'completed')
+    if (!completed) return null
+    const labels: Record<string, string> = { trial: '试听', assessment: '班型测评' }
+    const [id] = completed
+    return {
+      label: `撤销「${labels[id] || id}」完成状态`,
+      onClick: () => void handleReopenMilestone(id),
+    }
+  }, [dealProgress?.milestones, handleReopenMilestone])
+
   if (historyError) return (
     <div role="alert" className="p-8 text-center space-y-4">
       <p>{historyError}</p>
@@ -686,6 +745,8 @@ const PracticeChatPage = () => {
           status={spinGuidanceStatus}
           statusError={spinGuidanceError}
           statusDurationMs={spinGuidanceDurationMs}
+          pendingEvent={pendingMilestoneEvent}
+          undoAction={milestoneUndo}
           collapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed((value) => !value)}
         />

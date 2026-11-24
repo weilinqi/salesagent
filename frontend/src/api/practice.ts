@@ -234,6 +234,27 @@ const api = {
   },
 
   /**
+   * 里程碑：确认"试听/测评已完成"并提交结果，时间线随之推进
+   */
+  async completeMilestone(sessionId: string, milestoneId: string, outcome: string): Promise<DealProgress> {
+    const response = await axios.post(
+      `${API_BASE}/practice/sessions/${sessionId}/milestones/${milestoneId}/complete`,
+      { outcome },
+    )
+    return response.data
+  },
+
+  /**
+   * 里程碑：撤销完成状态（点错了改期重来）
+   */
+  async reopenMilestone(sessionId: string, milestoneId: string): Promise<DealProgress> {
+    const response = await axios.post(
+      `${API_BASE}/practice/sessions/${sessionId}/milestones/${milestoneId}/reopen`,
+    )
+    return response.data
+  },
+
+  /**
    * 获取会话总结报告
    */
   async getSessionSummary(sessionId: string): Promise<SessionSummary> {

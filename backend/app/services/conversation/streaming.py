@@ -372,6 +372,18 @@ async def parallel_context_assembly(
     except Exception as error:
         print(f"[LEDGER] build failed (non-fatal): {type(error).__name__}")
 
+    # 里程碑世界状态：试听/测评这类"已经发生的事"必须每轮注入，
+    # 否则模型几分钟后就忘了，会把对话拉回"还没试听"的状态。
+    try:
+        from app.services.conversation import milestones as milestone_rules
+
+        deal_flags = (deal_snapshot or {}).get("flags") if isinstance(deal_snapshot, dict) else {}
+        world_state = milestone_rules.render_world_state(deal_flags or {})
+        if world_state:
+            ledger_text = f"{ledger_text}{world_state}"
+    except Exception as error:
+        print(f"[MILESTONE] world state failed (non-fatal): {type(error).__name__}")
+
     # 并行装配 — 完整保留所有功能
     async def build_msgs():
         return handler._build_messages(
