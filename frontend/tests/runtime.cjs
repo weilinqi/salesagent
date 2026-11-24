@@ -15,6 +15,17 @@ function harness(overrides = {}) {
     createContext: () => ({ Provider: 'provider' }),
     useContext: context => context,
     useCallback: callback => callback,
+    // 与真实 React 语义一致：依赖不变时复用上次结果
+    useMemo: (factory, dependencies) => {
+      const index = cursor++, previous = slots[index]
+      if (previous && dependencies?.length === previous.dependencies?.length
+        && dependencies.every((value, i) => Object.is(value, previous.dependencies[i]))) {
+        return previous.value
+      }
+      const value = factory()
+      slots[index] = { dependencies: dependencies ? [...dependencies] : dependencies, value }
+      return value
+    },
     useRef: value => {
       const index = cursor++
       return slots[index] ||= { current: value }
