@@ -4,7 +4,7 @@ import type { Background, PreparationProfile } from './CustomerPreparation'
 
 type SuggestionItem = { title: string; speech: string }
 
-function localSuggestions(trainingMode: 'full' | 'rejection' | 'price_objection', profile: PreparationProfile): SuggestionItem[] {
+function localSuggestions(trainingMode: 'full' | 'rejection' | 'price_objection' | 'follow_up', profile: PreparationProfile): SuggestionItem[] {
   if (trainingMode === 'price_objection') {
     const brandA = profile.price_brand_a || '当前方案'
     const brandB = profile.price_brand_b || '对比方案'
@@ -25,6 +25,17 @@ function localSuggestions(trainingMode: 'full' | 'rejection' | 'price_objection'
       { title: '留一个下一步', speech: '如果我补充一份更有针对性的资料，您愿意再看看吗？' },
     ]
   }
+  if (trainingMode === 'follow_up') {
+    const customer = profile.customer_name || profile.organization || '您'
+    const progress = profile.current_progress || profile.needs || '上次沟通后的情况'
+    const expectation = profile.follow_up_expectation || profile.goal || '确认下一步安排'
+    return [
+      { title: '自然接续上次沟通', speech: `${customer}，您好，想跟进一下我们上次沟通的情况，现在方便聊两分钟吗？` },
+      { title: '确认最新进度', speech: `上次您提到${progress}，这段时间有没有新的变化？` },
+      { title: '核对当前顾虑', speech: '目前还有哪些问题或顾虑，您希望我优先补充说明？' },
+      { title: '约定明确下一步', speech: `如果这次先把${expectation}确认下来，您觉得下一步怎样安排最合适？` },
+    ]
+  }
   const product = profile.product || '这个方案'
   return [
     { title: '了解当前情况', speech: `您现在对${product}最想先了解哪一方面？` },
@@ -34,7 +45,7 @@ function localSuggestions(trainingMode: 'full' | 'rejection' | 'price_objection'
   ]
 }
 
-export default function SalesSuggestions({ profile, background, trainingMode = 'full' }: { trainingMode?: 'full' | 'rejection' | 'price_objection'; profile: PreparationProfile; background?: Background }) {
+export default function SalesSuggestions({ profile, background, trainingMode = 'full' }: { trainingMode?: 'full' | 'rejection' | 'price_objection' | 'follow_up'; profile: PreparationProfile; background?: Background }) {
   const [items, setItems] = useState<SuggestionItem[]>(() => localSuggestions(trainingMode, profile))
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')

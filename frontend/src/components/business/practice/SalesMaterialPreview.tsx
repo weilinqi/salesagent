@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
 import type { Background, PreparationProfile } from './CustomerPreparation'
 
-export default function SalesMaterialPreview({ profile, background, trainingMode = 'full' }: { profile: PreparationProfile; background: Background; trainingMode?: 'full' | 'rejection' | 'price_objection' }) {
+export default function SalesMaterialPreview({ profile, background, trainingMode = 'full' }: { profile: PreparationProfile; background: Background; trainingMode?: 'full' | 'rejection' | 'price_objection' | 'follow_up' }) {
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')

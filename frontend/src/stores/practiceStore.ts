@@ -34,7 +34,7 @@ export interface CustomerPersona {
 
 // Session type
 interface PracticeSession {
-  training_mode?: 'full' | 'rejection' | 'price_objection'
+  training_mode?: 'full' | 'rejection' | 'price_objection' | 'follow_up'
   id: string
   scenario_id: string
   status: 'preparing' | 'active' | 'completed'

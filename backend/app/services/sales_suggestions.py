@@ -9,7 +9,7 @@ class PreviousSuggestion(BaseModel):
     speech: str = Field(max_length=180)
 
 class SuggestionRequest(MaterialRequest):
-    training_mode: Literal['full', 'rejection', 'price_objection'] = 'full'
+    training_mode: Literal['full', 'rejection', 'price_objection', 'follow_up'] = 'full'
     background: MaterialBackground = Field(default_factory=MaterialBackground)
     previous: list[PreviousSuggestion] = Field(default_factory=list, max_length=30)
 
@@ -50,6 +50,9 @@ async def sales_suggestions(body):
     if mode == 'rejection':
         mode_rules = ('当前训练模块是拒绝挽回，即使用户未提拒绝，也按客户已拒绝的销售情景提供不同应对角度。'
                       '结合产品和身份自然生成，不假定或透露本轮具体拒绝原因，不为用户编造已发生的对话；不要生成普通寒暄开场。')
+    elif mode == 'follow_up':
+        mode_rules = ('当前训练模块是回访与跟进。客户已有历史沟通，话术必须自然承接已知的历史沟通摘要、当前进度和回访预期；'
+                      '优先确认进展或变化、核对顾虑，并争取一个明确的下一步。不要将客户当作首次接触对象，也不要编造曾经作出的承诺。')
     elif mode == 'price_objection':
         mode_rules = ('当前训练模块是价格异议处理。每个角度都必须服务于识别或回应价格顾虑，可围绕客户和什么相比、预算差距、价值拆解、总成本、风险、付款条件和下一步确认展开。'
                       '如果 profile 中提供了 price_brand_a、price_brand_b、price_brand_c、price_comparison_aspect 和 price_concern，话术必须直接围绕这些品牌与同一个价格比较方面展开；不要更换比较对象，也不要把单课时价格和总价混为一谈。'

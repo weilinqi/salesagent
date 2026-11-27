@@ -472,6 +472,7 @@ async def stream_pipeline(
 
     session_info = session_manager.get_session_info(session_id) or {}
     role_config = session_info.get("role_config", {})
+    selected_voice = role_config.get("voice") or "male-qn-qingse"
     customer_type_map = {
         "rational": "analytical", "emotional": "expressive",
         "hesitant": "amiable", "decisive": "assertive",
@@ -614,6 +615,7 @@ async def stream_pipeline(
             tts_tasks.append(asyncio.create_task(
                 sentence_to_audio_stream(
                     full_sentence, minimax, emotion, voice_modify,
+                    voice=selected_voice,
                     on_chunk=websocket_send_binary,
                 )
             ))
@@ -688,7 +690,7 @@ async def stream_pipeline(
             full_audio = await minimax.text_to_speech(
                 text=clean,
                 model="speech-2.8-hd",
-                voice="male-qn-qingse",
+                voice=selected_voice,
                 speed=1.0,
                 format="mp3",
                 emotion=emotion,

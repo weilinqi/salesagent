@@ -12,6 +12,7 @@ import { LoginPage, RegisterPage } from './pages/Auth'
 import { ProfilePage, HistoryPage, SettingsPage } from './pages/User'
 import { DashboardPage } from './pages/Dashboard'
 import { CustomerManagementPage } from './pages/Customers'
+import { FollowUpPage } from './pages/FollowUps'
 import { KnowledgeBasePage } from './pages/Knowledge'
 import { BriefListPage, BriefDetailPage } from './pages/Briefs'
 import SpinPreparationPage from './pages/Spin/SpinPreparationPage'
@@ -51,6 +52,7 @@ function App() {
             <Route path="/spin/preparation" element={<SpinPreparationPage />} />
             <Route path="/practice" element={<PracticePage />} />
             <Route path="/customers" element={<CustomerManagementPage />} />
+            <Route path="/follow-ups" element={<FollowUpPage />} />
             <Route path="/practice/chat" element={<PracticeChatPage />} />
             <Route path="/practice/review" element={<PracticeReviewPage />} />
             <Route path="/practice/report/:session_id" element={<ReportPage />} />

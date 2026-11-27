@@ -783,7 +783,7 @@ async def _init_persona_and_first_message(websocket, session_id: str,
             audio_bytes = await minimax.text_to_speech(
                 text=first_text_with_tags,
                 model="speech-2.8-hd",
-                voice="male-qn-qingse",
+                voice=role_config.get("voice") or "male-qn-qingse",
                 speed=1.0,
                 volume=1.0,
                 pitch=1.0,
@@ -982,7 +982,7 @@ async def practice_websocket(websocket: WebSocket, session_id: str):
             print(f"[Realtime] starting voice chat...")
             final_text = await svc.realtime_voice_chat(
                 pcm_source(), on_text_delta, on_audio_delta,
-                voice='male-qn-qingse',
+                voice=role_config.get('voice') or 'male-qn-qingse',
                 system_instruction='你扮演客户李总，45岁制造业总经理。简短的回复1-2句话。',
             )
             print(f"[Realtime] done, final: {final_text!r}")
