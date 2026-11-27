@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 import customerTableApi from '../../api/customerTables'
 import type {
   CustomerColumn,
@@ -118,6 +119,7 @@ function SelectionSquare({ selected, partial = false, label, onClick, disabled =
 }
 
 export default function CustomerManagementPage() {
+  const navigate = useNavigate()
   const [tables, setTables] = useState<CustomerTableSummary[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [detail, setDetail] = useState<CustomerTableDetail | null>(null)
@@ -637,6 +639,7 @@ export default function CustomerManagementPage() {
                           </th>
                         )}
                         <th className={`sticky ${isSelectionMode ? 'left-16' : 'left-0'} z-20 w-14 border-b border-r border-gray-200 bg-gray-100 px-2 py-3 text-center text-xs font-semibold text-gray-500`}>#</th>
+                        <th className={`sticky ${isSelectionMode ? 'left-[7.5rem]' : 'left-14'} z-20 min-w-[5.5rem] border-b border-r border-gray-200 bg-gray-100 px-2 py-3 text-center text-xs font-semibold text-gray-500`}>回访</th>
                         {detail.columns.map(column => (
                           <th key={column.key} className="min-w-[9rem] border-b border-r border-gray-200 px-3 py-2 align-top">
                             <button
@@ -660,7 +663,7 @@ export default function CustomerManagementPage() {
                     <tbody>
                       {detail.rows.length === 0 ? (
                         <tr>
-                          <td colSpan={detail.columns.length + 3 + (isSelectionMode ? 1 : 0)} className="px-4 py-12 text-center text-sm text-gray-500">
+                          <td colSpan={detail.columns.length + 4 + (isSelectionMode ? 1 : 0)} className="px-4 py-12 text-center text-sm text-gray-500">
                             {appliedSearch ? '没有匹配的客户记录。' : '这张表格暂时没有客户记录。'}
                           </td>
                         </tr>
@@ -680,6 +683,15 @@ export default function CustomerManagementPage() {
                             )}
                             <td className={`sticky ${isSelectionMode ? 'left-16' : 'left-0'} z-10 border-r border-gray-200 px-2 py-2 text-center text-xs text-gray-500 ${selected ? 'bg-red-50' : 'bg-white'}`}>
                               {row.position}
+                            </td>
+                            <td className={`sticky ${isSelectionMode ? 'left-[7.5rem]' : 'left-14'} z-10 border-r border-gray-200 px-2 py-2 text-center ${selected ? 'bg-red-50' : 'bg-white'}`}>
+                              <button
+                                type="button"
+                                onClick={() => navigate('/practice', { state: { customerContext: { training_mode: 'follow_up', industry: '', scale: '', pain_points: [] }, userContext: { follow_up_source: { tableId: detail.id, rowId: row.id } } } })}
+                                className="rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                              >
+                                回访
+                              </button>
                             </td>
                             {detail.columns.map(column => {
                               const uncertain = unresolved.find(item => item.column_key === column.key)

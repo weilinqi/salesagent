@@ -60,14 +60,14 @@ class PreparationProfile(BaseModel):
 class PreparationRequest(BaseModel):
     profile: PreparationProfile = Field(default_factory=PreparationProfile)
     message: str = Field(min_length=1, max_length=4000)
-    training_mode: Literal['full', 'rejection', 'price_objection'] = 'full'
+    training_mode: Literal['full', 'rejection', 'price_objection', 'follow_up'] = 'full'
 
 class BackgroundRequest(BaseModel):
     target: str = Field(default="", max_length=1000)
     organization: str = Field(default='', max_length=1000)
     product: str = Field(default='', max_length=1000)
     needs: str = Field(default='', max_length=1000)
-    training_mode: Literal['full', 'rejection', 'price_objection'] = 'full'
+    training_mode: Literal['full', 'rejection', 'price_objection', 'follow_up'] = 'full'
     price_brand_a: str = Field(default='', max_length=1000)
     price_brand_b: str = Field(default='', max_length=1000)
     price_brand_c: str = Field(default='', max_length=1000)

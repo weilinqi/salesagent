@@ -196,7 +196,7 @@ async def create_session(
         )
 
     mode = (session_data.customer_context or {}).get('training_mode', 'full')
-    if mode not in ('full', 'rejection', 'price_objection'):
+    if mode not in ('full', 'rejection', 'price_objection', 'follow_up'):
         raise HTTPException(status_code=422, detail='未知训练模块')
     prepared = (session_data.customer_context or {}).get("preparation")
     if prepared is not None:

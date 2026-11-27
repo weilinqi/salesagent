@@ -2,13 +2,14 @@
 API v1 package
 """
 from fastapi import APIRouter
-from app.api.v1 import practice, auth, profile, history, knowledge, spin, tts, briefs, notifications, customers, guide
+from app.api.v1 import practice, auth, profile, history, knowledge, spin, tts, briefs, notifications, customers, follow_ups, guide
 
 router = APIRouter()
 
 # Include all API routers
 router.include_router(practice.router)
 router.include_router(customers.router)
+router.include_router(follow_ups.router)
 router.include_router(guide.router)
 router.include_router(auth.router)
 router.include_router(profile.router)

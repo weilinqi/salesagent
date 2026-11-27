@@ -35,7 +35,8 @@ export interface SessionCreateResponse {
 }
 
 export interface CustomerContext {
-  training_mode?: 'full' | 'rejection' | 'price_objection'
+  training_mode?: 'full' | 'rejection' | 'price_objection' | 'follow_up'
+  follow_up?: boolean
   preparation_background?: import('../components/business/practice/CustomerPreparation').Background
   preparation?: import('../components/business/practice/CustomerPreparation').PreparationProfile
   preparation_pdf?: { filename: string; created_at: string }
@@ -202,7 +203,7 @@ const api = {
     sessionId: string,
     profile: import('../components/business/practice/CustomerPreparation').PreparationProfile,
     background: import('../components/business/practice/CustomerPreparation').Background,
-    trainingMode: 'full' | 'rejection' | 'price_objection' = 'full',
+    trainingMode: 'full' | 'rejection' | 'price_objection' | 'follow_up' = 'full',
   ): Promise<{ status: string; filename: string }> {
     const response = await axios.post(`${API_BASE}/practice/sessions/${sessionId}/preparation/material`, { profile, background, training_mode: trainingMode })
     return response.data

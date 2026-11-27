@@ -4,7 +4,8 @@ import SalesMaterialPreview from './SalesMaterialPreview'
 import SalesSuggestions from './SalesSuggestions'
 
 export type PreparationProfile = Record<'industry' | 'product' | 'target' | 'organization' | 'needs' | 'preferences' | 'goal' |
-  'price_brand_a' | 'price_brand_b' | 'price_brand_c' | 'price_comparison_aspect' | 'price_concern', string>
+  'price_brand_a' | 'price_brand_b' | 'price_brand_c' | 'price_comparison_aspect' | 'price_concern' |
+  'customer_name' | 'history_summary' | 'current_progress' | 'follow_up_expectation', string>
 const fields: [keyof PreparationProfile, string, string][] = [
   ['industry', '推销行业', '待补充'], ['product', '产品或服务', '必填'],
   ['target', '对象身份／职务', '必填'], ['organization', '关联公司／机构／人物', '可选'],
@@ -23,9 +24,14 @@ const priceDisplayFields: [keyof PreparationProfile, string, string][] = [
   ['product', '比较的产品或班型', '必填'], ['price_comparison_aspect', '价格比较方面', '必填'],
   ['price_concern', '客户的具体价格顾虑', '必填'], ['goal', '本次练习目标', '必填'],
 ]
+const followUpFields: [keyof PreparationProfile, string, string][] = [
+  ['customer_name', '客户姓名', '必填'], ['target', '职务身份', '必填'], ['product', '推销产品', '必填'],
+  ['history_summary', '历史沟通摘要', '待补充'], ['current_progress', '当前进度', '待补充'], ['follow_up_expectation', '回访预期', '必填'],
+]
 const empty: PreparationProfile = {
   industry: '', product: '', target: '', organization: '', needs: '', preferences: '', goal: '',
   price_brand_a: '', price_brand_b: '', price_brand_c: '', price_comparison_aspect: '', price_concern: '',
+  customer_name: '', history_summary: '', current_progress: '', follow_up_expectation: '',
 }
 const unknownValues = new Set(['', '未知', '不清楚', '不知道', '待补充', '待了解', '太贵', '很贵', '价格高'])
 const isKnown = (value: string) => !unknownValues.has(value.trim())
@@ -52,7 +58,7 @@ function localPriceComparison(profile: PreparationProfile): PriceComparison | un
   }
 }
 
-export default function CustomerPreparation({ onStart, starting, initialProfile, trainingMode = 'full', onProfileChange }: { trainingMode?: 'full' | 'rejection' | 'price_objection'; onProfileChange?: (profile: PreparationProfile) => void; initialProfile?: Partial<PreparationProfile>; onStart: (profile: PreparationProfile, background?: Background) => Promise<void>; starting: boolean }) {
+export default function CustomerPreparation({ onStart, starting, initialProfile, trainingMode = 'full', onProfileChange }: { trainingMode?: 'full' | 'rejection' | 'price_objection' | 'follow_up'; onProfileChange?: (profile: PreparationProfile) => void; initialProfile?: Partial<PreparationProfile>; onStart: (profile: PreparationProfile, background?: Background) => Promise<void>; starting: boolean }) {
   const [profile, setProfile] = useState<PreparationProfile>(() => ({ ...empty, ...initialProfile }))
   const [message, setMessage] = useState('')
   const [questions, setQuestions] = useState<string[]>([])
@@ -75,7 +81,8 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
     if (key === 'price_brand_a' || key === 'price_brand_b') return isKnown(profile[key]) && brandsDiffer
     return isKnown(profile[key])
   }
-  const visibleFields = trainingMode === 'price_objection' ? priceDisplayFields : fields
+  const isFollowUp = trainingMode === 'follow_up'
+  const visibleFields = trainingMode === 'price_objection' ? priceDisplayFields : isFollowUp ? followUpFields : fields
   const missingRequiredFields = visibleFields.filter(([key, , requirement]) => requirement === '必填' && !(
     trainingMode === 'price_objection' ? priceFieldReady(key) : isKnown(profile[key])
   ))
@@ -91,7 +98,9 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
       isKnown(profile.price_brand_a) && isKnown(profile.price_brand_b) && isKnown(profile.price_comparison_aspect)
     )
     if ((!profile.organization.trim() && !profile.product.trim()) || !priceSearchReady || starting) { setSearching(false); return }
-    const cacheKey = [trainingMode, profile.organization, profile.product, profile.needs, profile.target,
+    const researchOrganization = isFollowUp ? profile.customer_name : profile.organization
+    const researchNeeds = isFollowUp ? [profile.history_summary, profile.current_progress].filter(Boolean).join('；') : profile.needs
+    const cacheKey = [trainingMode, researchOrganization, profile.product, researchNeeds, profile.target,
       profile.price_brand_a, profile.price_brand_b, profile.price_brand_c, profile.price_comparison_aspect].map(value => value.trim()).join('\n')
     const cached = cache.current.get(cacheKey)
     if (cached && Date.now() - cached.at < 300000) { setBackground(cached.data); setSearching(false); return }
@@ -99,27 +108,54 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
     setSearching(true)
     const timer = setTimeout(() => {
       axios.post<Background>('/api/v1/practice/preparation/background', {
-        organization: profile.organization.trim(), product: profile.product, needs: profile.needs, target: profile.target,
+        organization: researchOrganization.trim(), product: profile.product, needs: researchNeeds, target: profile.target,
         training_mode: trainingMode, price_brand_a: profile.price_brand_a, price_brand_b: profile.price_brand_b,
         price_brand_c: profile.price_brand_c, price_comparison_aspect: profile.price_comparison_aspect,
       }, { signal: controller.signal, timeout: trainingMode === 'price_objection' ? 30000 : 75000 })
         .then(({ data }) => { if (!controller.signal.aborted) { setBackground(data); if (data.insights?.length) { if (cache.current.size >= 10) cache.current.delete(cache.current.keys().next().value!); cache.current.set(cacheKey, { data, at: Date.now() }) } } })
         .catch(() => { if (!controller.signal.aborted) setBackground({
-          organization: profile.organization.trim(), sources: [],
+          organization: researchOrganization.trim(), sources: [],
           notice: '公开资料检索暂不可用；此 PDF 只保留已确认信息，不代表已核实课程、价格或规则。',
           gaps: ['联网检索超时或暂不可用，课程、价格与规则需要后续核实。'],
           checked_at: new Date().toISOString(),
-          search_key: [profile.organization, profile.product, profile.needs, profile.target].map(value => value.trim()).join('\n'),
+          search_key: [researchOrganization, profile.product, researchNeeds, profile.target].map(value => value.trim()).join('\n'),
           price_comparison: trainingMode === 'price_objection' ? localPriceComparison(profile) : undefined,
         }) })
         .finally(() => { if (!controller.signal.aborted) setSearching(false) })
     }, 500)
     return () => { clearTimeout(timer); controller.abort() }
-  }, [profile.organization, profile.product, profile.needs, profile.target, profile.price_brand_a,
-    profile.price_brand_b, profile.price_brand_c, profile.price_comparison_aspect, trainingMode, starting, searchRevision])
+  }, [profile.organization, profile.customer_name, profile.product, profile.needs, profile.history_summary, profile.current_progress, profile.target, profile.price_brand_a,
+    profile.price_brand_b, profile.price_brand_c, profile.price_comparison_aspect, trainingMode, starting, searchRevision, isFollowUp])
 
   async function collect() {
     if (!message.trim() || busy || starting) return
+    if (isFollowUp) {
+      setBusy(true); setError('')
+      try {
+        const context = [
+          `客户姓名：${profile.customer_name}`,
+          `职务身份：${profile.target}`,
+          `推销产品：${profile.product}`,
+          `历史沟通摘要：${profile.history_summary}`,
+          `当前进度：${profile.current_progress}`,
+          `回访预期：${profile.follow_up_expectation}`,
+          `补充说明：${message}`,
+        ].join('\n')
+        const { data } = await axios.post<{ profile: { customer_name: string; identity: string; product: string; history_summary: string; current_progress: string; expectation: string }; scripts: string[] }>('/api/v1/follow-ups/organize', { description: context }, { timeout: 45000 })
+        setProfile(previous => ({ ...previous,
+          customer_name: data.profile.customer_name || previous.customer_name,
+          target: data.profile.identity || previous.target,
+          product: data.profile.product || previous.product,
+          history_summary: data.profile.history_summary || previous.history_summary,
+          current_progress: data.profile.current_progress || previous.current_progress,
+          follow_up_expectation: data.profile.expectation || previous.follow_up_expectation,
+        }))
+        setMessage(''); setCollected(true); setQuestions(data.scripts.slice(0, 2))
+      } catch {
+        setError('整理暂时失败，请重试或直接填写下方信息。'); setCollected(true)
+      } finally { setBusy(false) }
+      return
+    }
     const snapshot = { ...profile }
     const turn = ++generation.current
     request.current?.abort()
@@ -145,29 +181,49 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
   async function start() {
     if (!ready || starting || searching) return
     generation.current++; request.current?.abort(); setBusy(false)
-      await onStart(Object.fromEntries([...fields, ...priceFields].map(([key]) => [key, current.current[key].trim()])) as PreparationProfile, background?.search_key === [current.current.organization, current.current.product, current.current.needs, current.current.target].map(value => value.trim()).join('\n') ? background : undefined)
+      const prepared = Object.fromEntries([...fields, ...priceFields, ...followUpFields].map(([key]) => [key, current.current[key].trim()])) as PreparationProfile
+      const normalized = isFollowUp ? {
+        ...prepared,
+        organization: prepared.customer_name,
+        needs: [prepared.history_summary, prepared.current_progress].filter(Boolean).join('；'),
+        goal: prepared.follow_up_expectation,
+      } : prepared
+      await onStart(normalized, background?.search_key === [normalized.organization, normalized.product, normalized.needs, normalized.target].map(value => value.trim()).join('\n') ? background : undefined)
   }
+
+  const preparedForPractice = isFollowUp ? {
+    ...profile,
+    organization: profile.customer_name,
+    needs: [profile.history_summary, profile.current_progress].filter(Boolean).join('；'),
+    goal: profile.follow_up_expectation,
+  } : profile
 
   return <section className="space-y-5">
     <div className="rounded-lg bg-blue-50 p-4">
-      <h2 className="font-semibold text-gray-900">先简单介绍你的推销对象</h2>
-      <p className="mt-2 text-sm text-gray-600">{trainingMode === 'price_objection'
+      <h2 className="font-semibold text-gray-900">{isFollowUp ? '补充本次回访情况' : '先简单介绍你的推销对象'}</h2>
+      <p className="mt-2 text-sm text-gray-600">{isFollowUp
+        ? '上方文字只用于补充或更正下方客户信息；表格入口会先自动填入已知内容。'
+        : trainingMode === 'price_objection'
         ? '提示：推销什么 · 对象是谁 · A 是哪家机构 · B 是哪家机构 · 客户在价格比较方面“有什么顾虑” · 想达成什么目标。'
         : '提示：推销什么 · 对象是谁 · 所在公司或机构 · 已知需求 · 想达成什么目标。知道多少说多少。'}</p>
-      <p className="mt-2 text-sm text-gray-500">{trainingMode === 'price_objection'
+      <p className="mt-2 text-sm text-gray-500">{isFollowUp
+        ? '例如：客户上次说预算还在审批，本次希望确认审批进度并约下周的方案演示。'
+        : trainingMode === 'price_objection'
         ? '例如：我从事教育培训行业，向石家庄某重点中学的高三学生家长介绍学而思高三数学一对一课程；客户在单课时价格方面有顾虑，认为学而思每课时约600元，比新东方同类课程每课时约450元贵，担心多出的费用不能带来更好效果，本次希望练习如何说明课程价值并争取试听。品牌和金额均为测试示例。'
         : '例如：我想向一家制造公司的采购经理介绍设备，希望预约演示，其他情况暂时不清楚。'}</p>
     </div>
     {questions.length > 0 && <ul className="list-disc pl-5 text-sm text-gray-700">{questions.map(q => <li key={q}>{q}</li>)}</ul>}
-    <label className="block text-sm font-medium">{collected ? '继续补充（也可直接修改列表）' : '初步介绍'}
-      <textarea value={message} onChange={e => setMessage(e.target.value)} disabled={busy || starting} maxLength={4000} rows={4} className="mt-2 w-full rounded-lg border p-3" placeholder={trainingMode === 'price_objection'
+    <label className="block text-sm font-medium">{isFollowUp ? '补充说明（可选）' : collected ? '继续补充（也可直接修改列表）' : '初步介绍'}
+      <textarea value={message} onChange={e => setMessage(e.target.value)} disabled={busy || starting} maxLength={4000} rows={4} className="mt-2 w-full rounded-lg border p-3" placeholder={isFollowUp
+        ? '补充本次回访中客户的新变化、已知异议或希望推进的动作…'
+        : trainingMode === 'price_objection'
         ? '请清楚说明：A 品牌、B 品牌、比较的产品或班型，以及客户在价格比较方面有什么具体顾虑…'
         : '请简单介绍你的销售任务和对象…'} />
     </label>
-    <button type="button" onClick={() => void collect()} disabled={busy || starting || !message.trim()} className="rounded-lg bg-primary px-4 py-2 text-white disabled:opacity-40">{busy ? '已开始自动填入，AI 正在完善…' : collected ? '补充并整理' : '整理信息'}</button>
+    <button type="button" onClick={() => void collect()} disabled={busy || starting || !message.trim()} className="rounded-lg bg-primary px-4 py-2 text-white disabled:opacity-40">{busy ? '已开始自动填入，AI 正在完善…' : isFollowUp ? '补充并整理' : collected ? '补充并整理' : '整理信息'}</button>
     {error && <p role="alert" className="text-sm text-amber-700">{error}</p>}
     <div className="rounded-lg border divide-y">
-      <h3 className="p-3 font-medium">{trainingMode === 'price_objection' ? '对象与价格信息 · 可直接修改' : '对象信息 · 可直接修改'}</h3>
+      <h3 className="p-3 font-medium">{isFollowUp ? '客户回访信息 · 可直接修改' : trainingMode === 'price_objection' ? '对象与价格信息 · 可直接修改' : '对象信息 · 可直接修改'}</h3>
       {visibleFields.map(([key, label, requirement]) => <label key={key} className="flex flex-col gap-2 p-3 sm:flex-row sm:items-start">
         <span className="text-sm sm:w-44 shrink-0">{label} <span className="text-xs text-gray-400">{requirement}</span></span>
         {key === 'price_concern'
@@ -217,11 +273,11 @@ export default function CustomerPreparation({ onStart, starting, initialProfile,
       </div>
       {background?.gaps?.some(gap => /超时|不可用|失败|重试/.test(gap)) && <button type="button" onClick={() => setSearchRevision(value => value + 1)} className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100">重新检索</button>}
     </div>}
-    {!searching && background?.search_key === [profile.organization, profile.product, profile.needs, profile.target].map(value => value.trim()).join('\n') && <SalesMaterialPreview key={JSON.stringify(profile) + trainingMode + background.checked_at} profile={profile} background={background} trainingMode={trainingMode} />}
+    {!searching && background?.search_key === [preparedForPractice.organization, preparedForPractice.product, preparedForPractice.needs, preparedForPractice.target].map(value => value.trim()).join('\n') && <SalesMaterialPreview key={JSON.stringify(preparedForPractice) + trainingMode + background.checked_at} profile={preparedForPractice} background={background} trainingMode={trainingMode} />}
     </div>
-    {profile.product.trim() && profile.target.trim() && <SalesSuggestions key={trainingMode + JSON.stringify(profile)} trainingMode={trainingMode} profile={profile} />}
-    <p className="text-xs text-gray-500">{trainingMode === 'price_objection' ? '未填资料保持未知。价格模式中客户会持续关注价格顾虑，不编造报价、优惠或竞品价格。' : '未填资料保持未知。模拟设定：客户沟通谨慎、适度追问，依据你的回应调整态度。'}</p>
-    <button type="button" disabled={!ready || starting || searching} onClick={() => void start()} className="w-full rounded-lg bg-primary p-3 font-medium text-white disabled:opacity-40">{!ready ? '请先补充必填信息' : searching ? '正在分别检索 A/B 价格资料…' : starting ? '正在进入对练…' : trainingMode === 'price_objection' ? '价格比较已完整，开始对练' : '直接进入对练'}</button>
+    {preparedForPractice.product.trim() && preparedForPractice.target.trim() && <SalesSuggestions key={trainingMode + JSON.stringify(preparedForPractice)} trainingMode={trainingMode} profile={preparedForPractice} />}
+    <p className="text-xs text-gray-500">{isFollowUp ? '回访模拟会基于客户历史与当前进度展开；未填写的信息保持未知。' : trainingMode === 'price_objection' ? '未填资料保持未知。价格模式中客户会持续关注价格顾虑，不编造报价、优惠或竞品价格。' : '未填资料保持未知。模拟设定：客户沟通谨慎、适度追问，依据你的回应调整态度。'}</p>
+    <button type="button" disabled={!ready || starting || searching} onClick={() => void start()} className="w-full rounded-lg bg-primary p-3 font-medium text-white disabled:opacity-40">{!ready ? '请先补充必填信息' : searching ? '正在检索相关资料…' : starting ? '正在进入对练…' : isFollowUp ? '开始回访对练' : trainingMode === 'price_objection' ? '价格比较已完整，开始对练' : '直接进入对练'}</button>
     {!ready && <p className="text-sm text-gray-500">还需填写：{missingRequiredLabels.join('、')}。价格模式要求先明确 A/B 品牌、价格比较方面和客户的具体价格顾虑。</p>}
   </section>
 }

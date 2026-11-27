@@ -299,23 +299,21 @@ const VoiceSelector = ({
           </div>
         </div>
 
-        {/* English Voices */}
-        <div className="mb-4">
-          <div className="text-xs text-gray-500 mb-2">英文声线</div>
-          <div className="grid grid-cols-1 gap-2">
-            {englishVoices.map(renderVoiceOption)}
-          </div>
-        </div>
-
-        {/* Other Voices */}
-        {otherVoices.length > 0 && (
-          <div>
-            <div className="text-xs text-gray-500 mb-2">其他声线</div>
-            <div className="grid grid-cols-1 gap-2">
-              {otherVoices.map(renderVoiceOption)}
+        <details className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <summary className="cursor-pointer text-sm font-medium text-gray-700">
+            多语言声线 <span className="ml-1 text-xs font-normal text-gray-500">英文、日文</span>
+          </summary>
+          <div className="mt-4 space-y-4">
+            <div>
+              <div className="mb-2 text-xs text-gray-500">英文声线</div>
+              <div className="grid grid-cols-1 gap-2">{englishVoices.map(renderVoiceOption)}</div>
             </div>
+            {otherVoices.length > 0 && <div>
+              <div className="mb-2 text-xs text-gray-500">其他语言声线</div>
+              <div className="grid grid-cols-1 gap-2">{otherVoices.map(renderVoiceOption)}</div>
+            </div>}
           </div>
-        )}
+        </details>
       </div>
 
       {/* Current selection */}

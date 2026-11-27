@@ -20,6 +20,11 @@ def audience(persona):
 
 def opening(persona=None):
     product = (persona or {}).get('product', '')
+    if (persona or {}).get('training_mode') == 'follow_up':
+        progress = str((persona or {}).get('current_situation') or '').strip()
+        if progress:
+            return f'你好，关于我们上次沟通的情况，{progress[:100]}，你这次想怎么跟进？'
+        return f'你好，关于上次聊的{str(product)[:60] or "方案"}，你这次想跟进什么？'
     if (persona or {}).get('training_mode') == 'rejection':
         return f'关于{str(product)[:60] or "这项服务"}，我暂时不打算考虑，先不用介绍了。'
     if (persona or {}).get('training_mode') == 'price_objection':
@@ -80,6 +85,12 @@ def training_rules(persona):
                 '先确认客户在和什么相比、预算差距和价值关注点；销售只重复优惠或施压时继续质疑，能解释价值、方案与条件时才逐步缓和。'
                 '允许保留顾虑或礼貌推迟决定，不无条件成交，不自动降价或承诺优惠，不每轮机械重复太贵，不转回完整首次拜访流程。'
                 '不扮演教练、不向销售透露评分、检索结果或建议。\n')
+    if mode == 'follow_up':
+        return ('【专项训练：回访与跟进，优先遵循】客户并非首次接触，已经有历史沟通。'
+                '首轮应自然承接上次沟通或当前进度，优先确认是否有新变化，不重新做首次产品介绍。'
+                '围绕已知需求、顾虑和回访目标推进；销售未提及历史情况时可礼貌追问其对上次事项的理解。'
+                '不编造客户曾答应的时间、预算、报价或承诺。销售回应切题时可逐步配合确认下一步；回避时保持谨慎。'
+                '争取清晰的后续动作，但不无条件同意，不扮演教练、不透露评分或建议。\n')
     return ''
 
 
@@ -98,6 +109,9 @@ async def generate_customer_opening(persona, chat):
     elif mode == 'price_objection':
         opening_instruction = ('\n现在正式开始价格异议处理对练。第一句必须直接以客户第一人称说出资料中的具体价格顾虑，并明确比较 A 与 B（如已提供 C 也可保留）在 price_comparison_aspect 上的差异。'
                                '不要问候、自我介绍、询问产品、解释生成过程或重新收集已知信息；不得新增资料中没有的价格、折扣或竞品事实。15至80字，只返回台词。')
+    elif mode == 'follow_up':
+        opening_instruction = ('\n现在正式开始回访与跟进对练。以客户第一人称自然承接上次沟通或当前进度，'
+                               '表达一个需要确认的变化或顾虑。不得虚构承诺、预算、报价或联系时间。15至80字，只返回台词。')
     else:
         opening_instruction = '\n现在刚开始对练，请以客户第一人称说一句自然的开场，15至60字。围绕具体产品与已知需求选一个切实相关的问题，不重新询问已知资料。不要解释生成过程，仅返回客户台词。'
     messages = [

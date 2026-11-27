@@ -42,7 +42,7 @@ class MaterialBackground(BaseModel):
 class MaterialRequest(BaseModel):
     profile: PreparationProfile
     background: MaterialBackground
-    training_mode: Literal['full', 'rejection', 'price_objection'] = 'full'
+    training_mode: Literal['full', 'rejection', 'price_objection', 'follow_up'] = 'full'
 
 def search_key(organization, product, needs, target):
     return '\n'.join(x.strip() for x in (organization, product, needs, target))
